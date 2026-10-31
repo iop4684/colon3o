@@ -16,7 +16,9 @@ struct LyricsView: View {
     /// Where the lyrics on screen were fetched from (nil for files you added).
     @State private var fetchedFrom: String?
     /// Where each line sits in the lyrics column (before scrolling), to bring the current one into place.
-    @State private var lineFrames: [Int: CGRect] = [:]
+    /// Each line's height. Positions are worked out from these rather than measured on screen,
+    /// because an on-screen measurement includes the scrolling itself and would feed back into it.
+    @State private var lineHeights: [Int: CGFloat] = [:]
     /// How far you've scrolled the lyrics yourself; eases back to 0 after you stop.
     @State private var dragOffset: CGFloat = 0
     @State private var dragStart: CGFloat?
@@ -144,7 +146,7 @@ struct LyricsView: View {
                         browsing: browsing,
                         position: position + timingLead,
                         target: target,
-                        onFrame: recordFrame,
+                        onHeight: recordHeight,
                         onSeek: onSeek)
                 .equatable()
                 .padding(.horizontal, 28)
@@ -163,14 +165,17 @@ struct LyricsView: View {
         .mask(fade)
     }
 
-    /// Remembers where a line sits, ignoring sub-point jitter so layout can't feed back on itself.
-    private func recordFrame(_ id: Int, _ frame: CGRect) {
-        if let old = lineFrames[id], abs(old.minY - frame.minY) < 0.5, abs(old.height - frame.height) < 0.5 { return }
-        lineFrames[id] = frame
+    /// Remembers a line's height, ignoring sub-point changes.
+    private func recordHeight(_ id: Int, _ height: CGFloat) {
+        if let old = lineHeights[id], abs(old - height) < 0.5 { return }
+        lineHeights[id] = height
     }
 
     private func scrollTarget(active: Int, height: CGFloat) -> CGFloat {
-        height * 0.3 - (lineFrames[max(active, 0)]?.minY ?? 0)
+        // Top of the current line: the lines above it plus the gaps between them.
+        let index = max(active, 0)
+        let above = (0..<index).reduce(CGFloat(0)) { $0 + (lineHeights[$1] ?? 0) } + CGFloat(index) * LyricColumn.spacing
+        return height * 0.3 - above
     }
 
     private var browseDrag: some Gesture {
@@ -247,8 +252,10 @@ private struct LyricColumn: View, Equatable {
     /// Playback position (with any timing lead), used by the current line and interludes only.
     let position: Double
     let target: CGFloat
-    let onFrame: (Int, CGRect) -> Void
+    let onHeight: (Int, CGFloat) -> Void
     let onSeek: (Double) -> Void
+
+    static let spacing: CGFloat = 26
 
     static func == (a: LyricColumn, b: LyricColumn) -> Bool {
         a.active == b.active && a.browsing == b.browsing && a.target == b.target && a.position == b.position
@@ -256,7 +263,7 @@ private struct LyricColumn: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: Self.spacing) {
             ForEach(lines) { line in
                 let isActive = line.id == active
                 let usesClock = isActive || line.text == "♪"
@@ -269,12 +276,11 @@ private struct LyricColumn: View, Equatable {
                          next: line.id + 1 < lines.count ? lines[line.id + 1].time : nil,
                          target: target,
                          delay: min(Double(max(line.id - max(active, 0), 0)) * 0.045, 0.25),
-                         onFrame: { frame in onFrame(line.id, frame) },
+                         onHeight: { height in onHeight(line.id, height) },
                          onTap: { onSeek(line.time) })
                     .equatable()
             }
         }
-        .coordinateSpace(.named("lyricsColumn"))
     }
 }
 
@@ -291,7 +297,7 @@ private struct LyricRow: View, Equatable {
     /// The column's offset to bring the current line into place; each row glides there on its own.
     let target: CGFloat
     let delay: Double
-    let onFrame: (CGRect) -> Void
+    let onHeight: (CGFloat) -> Void
     let onTap: () -> Void
 
     static func == (a: LyricRow, b: LyricRow) -> Bool {
@@ -312,7 +318,8 @@ private struct LyricRow: View, Equatable {
             .animation(.easeOut(duration: 0.3), value: browsing)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("lyricsColumn")) } action: { onFrame($0) }
+            // Only the height: unaffected by scrolling, so it can't feed back into the scroll.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight($0) }
             .offset(y: target)
             .animation(.spring(response: 0.8, dampingFraction: 0.86).delay(delay), value: target)
             .onTapGesture(perform: onTap)
