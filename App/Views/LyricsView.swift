@@ -144,7 +144,6 @@ struct LyricsView: View {
                     lineBlock(line, isActive: isActive, next: next)
                         // Full height whatever the column's size, so long lines wrap instead of being cut off.
                         .fixedSize(horizontal: false, vertical: true)
-                        .transition(.opacity)
                         .foregroundStyle(.white.opacity(isActive ? 1 : 0.32))
                         .blur(radius: isActive || browsing ? 0 : min(Double(distance) * 0.6, 2.4))
                         .scaleEffect(isActive ? 1 : 0.97, anchor: .leading)
@@ -218,8 +217,10 @@ struct LyricsView: View {
         let romaji = showRomaji ? romaji[line.id] : nil
         if line.text == "♪", line.words.isEmpty {
             InterludeDots(start: line.time, end: next ?? line.time + 8, position: position + timingLead, isActive: isActive)
-        } else if isActive, !line.words.isEmpty {
-            WordByWordLine(line: line, romaji: romaji, position: position + timingLead)
+        } else if !line.words.isEmpty {
+            // The same view whether current or not, so a line that stops being current just dims
+            // where it is, instead of a copy fading out behind the scrolling lines.
+            WordByWordLine(line: line, romaji: romaji, position: isActive ? position + timingLead : 0, isActive: isActive)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(line.text).font(LyricsFont.line)
@@ -309,6 +310,8 @@ private struct WordByWordLine: View {
     let line: LyricLine
     let romaji: [Romaji.Piece]?
     let position: Double
+    /// Only the current line sweeps; others draw plainly (and don't redraw every frame).
+    let isActive: Bool
 
     private struct Anchor {
         var position: Double
@@ -318,19 +321,22 @@ private struct WordByWordLine: View {
     @State private var anchor = Anchor(position: 0, at: .distantPast)
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !isActive)) { context in
             let now = estimate(at: context.date)
             VStack(alignment: .leading, spacing: 4) {
                 words.font(LyricsFont.line)
-                    .textRenderer(WordSweepRenderer(now: now))
+                    .textRenderer(WordSweepRenderer(now: now, isActive: isActive))
                 if let romaji {
                     romajiText(romaji)
                         .font(LyricsFont.romaji)
-                        .textRenderer(WordSweepRenderer(now: now))
+                        .textRenderer(WordSweepRenderer(now: now, isActive: isActive))
                 }
             }
         }
         .onAppear { anchor = Anchor(position: position, at: Date()) }
+        .onChange(of: isActive) { _, active in
+            if active { anchor = Anchor(position: position, at: Date()) }
+        }
         .onChange(of: position) { _, newValue in
             let date = Date()
             let predicted = estimate(at: date)
@@ -421,6 +427,7 @@ private struct WordSweep: TextAttribute {
 /// over half a second, so the whole line lifts in one continuous wave.
 private struct WordSweepRenderer: TextRenderer {
     let now: Double
+    var isActive = true
 
     /// Unsung words on the current line: dimmed, but less than other lines (as in Apple Music),
     /// so the line reads as current straight away.
@@ -436,7 +443,7 @@ private struct WordSweepRenderer: TextRenderer {
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         for line in layout {
             for run in line {
-                guard let sweep = run[WordSweep.self] else {
+                guard isActive, let sweep = run[WordSweep.self] else {
                     context.draw(run)
                     continue
                 }
