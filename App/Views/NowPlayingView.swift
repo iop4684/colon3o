@@ -17,6 +17,10 @@ struct NowPlayingView: View {
     @State private var mode: Mode = .artwork
     @State private var showEqualizer = false
     @AppStorage(LyricsView.romajiKey) private var showRomaji = true
+    @AppStorage(PerformanceTest.meterKey) private var showMeter = false
+    @AppStorage(PerformanceTest.noSweepKey) private var noSweep = false
+    @AppStorage(PerformanceTest.noFadeKey) private var noFade = false
+    @AppStorage(PerformanceTest.plainBackgroundKey) private var plainBackground = false
     /// How far the player has been pulled down to close it.
     @State private var dragOffset: CGFloat = 0
 
@@ -60,7 +64,10 @@ struct NowPlayingView: View {
         }
         .padding(.horizontal, 28)
         .foregroundStyle(.white)
-        .background { PlayerBackground(image: player.artwork, cornerRadius: dragOffset > 0 ? 44 : 0) }
+        .background { PlayerBackground(image: plainBackground ? nil : player.artwork, cornerRadius: dragOffset > 0 ? 44 : 0) }
+        .overlay(alignment: .topLeading) {
+            if showMeter { FrameMeterBadge().padding(.leading, 16).padding(.top, 2) }
+        }
         .environment(\.colorScheme, .dark)
         // Full screen like Apple Music; pull down anywhere outside the lyrics, queue and sliders
         // to close it, with the app showing through behind as it moves.
@@ -182,6 +189,14 @@ struct NowPlayingView: View {
                 showRomaji.toggle()
             } label: {
                 Label(showRomaji ? "Hide Romaji" : "Show Romaji", systemImage: "character.textbox")
+            }
+            Menu {
+                Toggle("Show Frame Rate", isOn: $showMeter)
+                Toggle("Turn Off Word Sweep", isOn: $noSweep)
+                Toggle("Turn Off Edge Fade", isOn: $noFade)
+                Toggle("Plain Background", isOn: $plainBackground)
+            } label: {
+                Label("Performance Test", systemImage: "gauge.with.dots.needle.33percent")
             }
             if FileManager.default.fileExists(atPath: LibraryStore.lyricsURL(for: track).path) {
                 Button(role: .destructive) {
@@ -411,7 +426,16 @@ struct VolumeRow: View {
 private final class CenteredVolumeView: MPVolumeView {
     override func layoutSubviews() {
         super.layoutSubviews()
-        for case let slider as UISlider in subviews {
+        centerSlider()
+    }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        setNeedsLayout()
+    }
+
+    private func centerSlider() {
+        for case let slider as UISlider in subviews where abs(slider.center.y - bounds.midY) > 0.5 {
             slider.center.y = bounds.midY
         }
     }
@@ -427,7 +451,9 @@ struct SystemVolumeSlider: UIViewRepresentable {
     }
 
     func updateUIView(_ view: MPVolumeView, context: Context) {
-        style(view)
+        // Styled once in makeUIView. Restyling on every redraw (pausing redraws the player) made
+        // the slider lay its track out again, out of line with the speaker icons.
+        view.setNeedsLayout()
     }
 
     private func style(_ view: MPVolumeView) {

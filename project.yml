@@ -36,6 +36,8 @@ targets:
         # The SDK itself only goes in when CI can fetch it (project-discord.yml).
         Colon3DiscordAppID: "$(COLON3_DISCORD_APP_ID)"
         UILaunchScreen: {}
+        # Lets animations run at 120 Hz on ProMotion iPhones (apps are held to 60 without it).
+        CADisableMinimumFrameDurationOnPhone: true
         UIBackgroundModes: [audio]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

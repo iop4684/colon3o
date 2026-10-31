@@ -30,6 +30,8 @@ struct LyricsView: View {
     /// Bumped when the romaji changes, so the column can compare one number instead of all of it.
     @State private var romajiVersion = 0
     @AppStorage(LyricsView.romajiKey) private var showRomaji = true
+    @AppStorage(PerformanceTest.noFadeKey) private var noFade = false
+    @AppStorage(PerformanceTest.noSweepKey) private var noSweep = false
 
     static let romajiKey = "lyrics.showRomaji"
 
@@ -148,7 +150,8 @@ struct LyricsView: View {
                         romajiVersion: showRomaji ? romajiVersion : -1,
                         active: active,
                         browsing: browsing,
-                        position: position + timingLead,
+                        position: noSweep ? 0 : position + timingLead,
+                        sweeps: !noSweep,
                         onHeight: recordHeight,
                         onSeek: onSeek)
                 .equatable()
@@ -171,7 +174,7 @@ struct LyricsView: View {
         .clipped()
         .contentShape(Rectangle())
         .gesture(browseDrag)
-        .mask(fade)
+        .mask(noFade ? AnyView(Color.black) : AnyView(fade))
     }
 
     /// Remembers a line's height, ignoring sub-point changes.
@@ -261,6 +264,8 @@ private struct LyricColumn: View, Equatable {
     let browsing: Bool
     /// Playback position (with any timing lead), used by the current line and interludes only.
     let position: Double
+    /// Performance test: off draws the current line plainly, without the word sweep.
+    var sweeps = true
     let onHeight: (Int, CGFloat) -> Void
     let onSeek: (Double) -> Void
 
@@ -268,6 +273,7 @@ private struct LyricColumn: View, Equatable {
 
     static func == (a: LyricColumn, b: LyricColumn) -> Bool {
         a.active == b.active && a.browsing == b.browsing && a.position == b.position && a.romajiVersion == b.romajiVersion
+            && a.sweeps == b.sweeps
             && a.lines.count == b.lines.count && a.lines.first?.time == b.lines.first?.time
     }
 
@@ -279,6 +285,7 @@ private struct LyricColumn: View, Equatable {
                 LyricRow(line: line,
                          romaji: romaji[line.id],
                          isActive: isActive,
+                         sweeps: sweeps,
                          distance: active < 0 ? 1 : abs(line.id - active),
                          browsing: browsing,
                          position: usesClock ? position : 0,
@@ -297,6 +304,7 @@ private struct LyricRow: View, Equatable {
     let line: LyricLine
     let romaji: [Romaji.Piece]?
     let isActive: Bool
+    var sweeps = true
     let distance: Int
     let browsing: Bool
     let position: Double
@@ -305,7 +313,7 @@ private struct LyricRow: View, Equatable {
     let onTap: () -> Void
 
     static func == (a: LyricRow, b: LyricRow) -> Bool {
-        a.line.id == b.line.id && a.isActive == b.isActive && a.distance == b.distance && a.browsing == b.browsing
+        a.line.id == b.line.id && a.isActive == b.isActive && a.sweeps == b.sweeps && a.distance == b.distance && a.browsing == b.browsing
             && a.position == b.position && a.romaji == b.romaji
             && a.next == b.next && a.line == b.line
     }
@@ -334,7 +342,7 @@ private struct LyricRow: View, Equatable {
         } else if !line.words.isEmpty {
             // The same view whether current or not, so a line that stops being current just dims
             // where it is, instead of a copy fading out behind the scrolling lines.
-            WordByWordLine(line: line, romaji: romaji, position: position, isActive: isActive)
+            WordByWordLine(line: line, romaji: romaji, position: position, isActive: isActive && sweeps)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(line.text).font(LyricsFont.line)
