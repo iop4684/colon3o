@@ -15,6 +15,7 @@ struct NowPlayingView: View {
     @EnvironmentObject private var router: AppRouter
     @State private var mode: Mode = .artwork
     @State private var showEqualizer = false
+    @AppStorage(LyricsView.romajiKey) private var showRomaji = true
     /// How far the player has been pulled down to close it.
     @State private var dragOffset: CGFloat = 0
 
@@ -175,6 +176,11 @@ struct NowPlayingView: View {
                 router.importLyrics(for: track)
             } label: {
                 Label("Import Lyrics (.lrc)…", systemImage: "doc.text")
+            }
+            Button {
+                showRomaji.toggle()
+            } label: {
+                Label(showRomaji ? "Hide Romaji" : "Show Romaji", systemImage: "character.textbox")
             }
             if FileManager.default.fileExists(atPath: LibraryStore.lyricsURL(for: track).path) {
                 Button(role: .destructive) {

@@ -16,6 +16,11 @@ struct LyricsView: View {
     /// Where the lyrics on screen were fetched from (nil for files you added).
     @State private var fetchedFrom: String?
     @State private var userScrolledAt: Date?
+    /// Romaji for Japanese lines, by line id (synced) or line number (plain).
+    @State private var romaji: [Int: String] = [:]
+    @AppStorage(LyricsView.romajiKey) private var showRomaji = true
+
+    static let romajiKey = "lyrics.showRomaji"
 
     var body: some View {
         Group {
@@ -84,8 +89,23 @@ struct LyricsView: View {
                                                        onPending: { checking = $0 })
         }
         fetchedFrom = await Task.detached { LyricsService.fetchedSource(of: file) }.value
+        let loaded = lyrics
+        romaji = await Task.detached(priority: .userInitiated) { Self.romanize(loaded) }.value
         checking = []
         isLoading = false
+    }
+
+    nonisolated private static func romanize(_ lyrics: Lyrics?) -> [Int: String] {
+        var result: [Int: String] = [:]
+        switch lyrics {
+        case let .synced(lines):
+            for line in lines { result[line.id] = Romaji.of(line.text) }
+        case let .plain(lines):
+            for (index, line) in lines.enumerated() { result[index] = Romaji.of(line) }
+        default:
+            break
+        }
+        return result
     }
 
     /// PetitLyrics' timings run late: measured against Apple Music on the same song, its words
@@ -109,8 +129,7 @@ struct LyricsView: View {
                 VStack(alignment: .leading, spacing: 26) {
                     ForEach(lines) { line in
                         let distance = active < 0 ? 1 : abs(line.id - active)
-                        lineText(line, isActive: line.id == active)
-                            .font(.system(size: 32, weight: .bold))
+                        lineBlock(line, isActive: line.id == active)
                             .foregroundStyle(.white.opacity(line.id == active ? 1 : 0.32))
                             .blur(radius: line.id == active ? 0 : min(Double(distance) * 0.6, 2.4))
                             .scaleEffect(line.id == active ? 1 : 0.97, anchor: .leading)
@@ -138,24 +157,33 @@ struct LyricsView: View {
     }
 
     /// The current line fills word by word when the lyrics have word timings; every other line
-    /// (and lyrics without them) is plain text, styled as before.
+    /// (and lyrics without them) is plain text. Romaji, when on, sits under Japanese lines.
     @ViewBuilder
-    private func lineText(_ line: LyricLine, isActive: Bool) -> some View {
+    private func lineBlock(_ line: LyricLine, isActive: Bool) -> some View {
+        let romaji = showRomaji ? romaji[line.id] : nil
         if isActive, !line.words.isEmpty {
-            WordByWordLine(line: line, position: position + timingLead)
+            WordByWordLine(line: line, romaji: romaji, position: position + timingLead)
         } else {
-            Text(line.text)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(line.text).font(LyricsFont.line)
+                if let romaji { Text(romaji).font(LyricsFont.romaji) }
+            }
         }
     }
 
     private func plain(_ lines: [String]) -> some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(line.isEmpty ? " " : line)
-                        .font(.system(size: 26, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(line.isEmpty ? " " : line)
+                            .font(.system(size: 26, weight: .bold))
+                        if showRomaji, let romaji = romaji[index] {
+                            Text(romaji).font(.system(size: 15, weight: .semibold)).opacity(0.75)
+                        }
+                    }
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .padding(.horizontal, 28)
@@ -183,13 +211,23 @@ struct LyricsView: View {
     }
 }
 
+enum LyricsFont {
+    static let line = Font.system(size: 32, weight: .bold)
+    static let romaji = Font.system(size: 17, weight: .semibold)
+}
+
 /// One line lighting up word by word, the way Apple Music does: a soft-edged sweep runs left to
-/// right through each word from when it starts to when it ends, the sung part floats up a
-/// little, and notes held a second or more glow and swell. The playback position arrives about
-/// five times a second, so between updates it's carried forward on the clock (at most a quarter
-/// second, so a pause doesn't run ahead) to keep the sweep smooth.
+/// right through each word from when it starts to when it ends, at constant speed. As the sweep
+/// passes, each character eases up a little, so the line rises in one smooth wave rather than
+/// word by word. Notes held a second or more glow and swell. Romaji under the line sweeps across
+/// the whole line's time.
+///
+/// The playback position arrives about five times a second. Between updates the time is carried
+/// forward on the clock, and each update is blended in rather than jumped to, so the sweep never
+/// stutters backwards; a pause stops it within a fraction of a second.
 private struct WordByWordLine: View {
     let line: LyricLine
+    let romaji: String?
     let position: Double
 
     private struct Anchor {
@@ -199,36 +237,58 @@ private struct WordByWordLine: View {
 
     @State private var anchor = Anchor(position: 0, at: .distantPast)
 
-    /// How early the sweep starts, in seconds (0: right on the word's time).
-    static let lead = 0.0
-    /// Share of the word's length the sweep takes (1: constant speed over the whole word, like Apple Music).
-    static let pace = 1.0
-
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60)) { context in
-            let elapsed = min(max(context.date.timeIntervalSince(anchor.at), 0), 0.25)
-            text(at: anchor.position + elapsed)
-                .textRenderer(WordSweepRenderer())
+            let now = estimate(at: context.date)
+            VStack(alignment: .leading, spacing: 4) {
+                words.font(LyricsFont.line)
+                    .textRenderer(WordSweepRenderer(now: now))
+                if let romaji, let span = lineSpan {
+                    Text(romaji)
+                        .customAttribute(WordSweep(index: 0, start: span.start, span: span.end - span.start, holds: false))
+                        .font(LyricsFont.romaji)
+                        .textRenderer(WordSweepRenderer(now: now))
+                }
+            }
         }
         .onAppear { anchor = Anchor(position: position, at: Date()) }
-        .onChange(of: position) { _, newValue in anchor = Anchor(position: newValue, at: Date()) }
+        .onChange(of: position) { _, newValue in
+            let date = Date()
+            let predicted = estimate(at: date)
+            // Small differences are eased in; a seek or a stall jumps straight there.
+            let blended = abs(newValue - predicted) < 0.3 ? predicted + (newValue - predicted) * 0.3 : newValue
+            anchor = Anchor(position: blended, at: date)
+        }
     }
 
-    private func text(at now: Double) -> Text {
+    private func estimate(at date: Date) -> Double {
+        anchor.position + min(max(date.timeIntervalSince(anchor.at), 0), 0.4)
+    }
+
+    /// When each word is sung. A known end (from the lyrics) is used as is; otherwise a word runs
+    /// until the next one starts, but no longer than a second, so a pause after it doesn't stretch it.
+    private func timing(_ index: Int) -> (start: Double, end: Double, known: Bool) {
         let words = line.words
+        let word = words[index]
+        let knownEnd = word.end ?? (index == words.count - 1 ? line.wordsEnd : nil)
+        let next = index + 1 < words.count ? words[index + 1].time : word.time + 1
+        let end = knownEnd ?? min(next, word.time + 1)
+        return (word.time, max(end, word.time + 0.05), knownEnd != nil)
+    }
+
+    private var lineSpan: (start: Double, end: Double)? {
+        guard !line.words.isEmpty else { return nil }
+        return (timing(0).start, timing(line.words.count - 1).end)
+    }
+
+    private var words: Text {
         var result = Text("")
-        for index in words.indices {
-            let word = words[index]
-            // A known end (from the lyrics) is used as is. Otherwise the word runs until the next
-            // one starts, but no longer than a second, so a pause after it doesn't stretch it.
-            let knownEnd = word.end ?? (index == words.count - 1 ? line.wordsEnd : nil)
-            let next = index + 1 < words.count ? words[index + 1].time : word.time + 1
-            let end = knownEnd ?? min(next, word.time + 1)
-            let span = max(end - word.time, 0.05)
-            let progress = min(max((now + Self.lead - word.time) / (span * Self.pace), 0), 1)
-            let held = knownEnd != nil && span >= 1 && Self.canEmphasize(word.text)
-            let emphasis = held ? sin(.pi * progress) : 0
-            result = result + Text(word.text).customAttribute(WordSweep(index: index, progress: progress, emphasis: emphasis))
+        for index in line.words.indices {
+            let word = line.words[index]
+            let time = timing(index)
+            let holds = time.known && time.end - time.start >= 1 && Self.canEmphasize(word.text)
+            result = result + Text(word.text)
+                .customAttribute(WordSweep(index: index, start: time.start, span: time.end - time.start, holds: holds))
         }
         return result
     }
@@ -244,23 +304,28 @@ private struct WordByWordLine: View {
     }
 }
 
-/// Per-word state for the renderer. `index` keeps neighbouring words from merging into one run.
+/// When a word is sung. `index` keeps neighbouring words from merging into one run.
 private struct WordSweep: TextAttribute {
     var index: Int
-    /// 0 not sung yet … 1 sung.
-    var progress: Double
-    /// 0 … 1, how much a held note glows and swells right now.
-    var emphasis: Double
+    var start: Double
+    var span: Double
+    /// A held note: glows and swells while it's sung.
+    var holds: Bool
 }
 
-/// Draws each word dimmed, then the sung part over it at full brightness through a mask whose
-/// soft edge moves left to right.
+/// Draws each character dimmed, then the sung part over it at full brightness through a mask
+/// whose soft edge moves left to right. Each character rises as the sweep passes it, easing in
+/// over half a second, so the whole line lifts in one continuous wave.
 private struct WordSweepRenderer: TextRenderer {
+    let now: Double
+
     /// Unsung words on the current line: dimmed, but less than other lines (as in Apple Music),
     /// so the line reads as current straight away.
     static let dimmed = 0.65
-    /// How far a fully sung word has floated up, in points.
-    static let lift: CGFloat = 1.5
+    /// How far sung text has risen, in points.
+    static let lift: CGFloat = 2
+    /// How long a character takes to rise once the sweep reaches it, in seconds.
+    static let rise = 0.5
 
     /// Room for the glow and swell to draw past the text's edges.
     var displayPadding: EdgeInsets { EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16) }
@@ -273,39 +338,55 @@ private struct WordSweepRenderer: TextRenderer {
                     continue
                 }
                 let bounds = run.typographicBounds.rect
+                let progress = min(max((now - sweep.start) / max(sweep.span, 0.05), 0), 1)
+                let emphasis = sweep.holds ? sin(.pi * progress) : 0
+
                 var word = context
-                if sweep.emphasis > 0 {
-                    let scale = 1 + 0.06 * sweep.emphasis
+                if emphasis > 0 {
+                    let scale = 1 + 0.05 * emphasis
                     word.translateBy(x: bounds.midX, y: bounds.midY)
                     word.scaleBy(x: scale, y: scale)
                     word.translateBy(x: -bounds.midX, y: -bounds.midY)
                 }
-                let eased = sweep.progress * sweep.progress * (3 - 2 * sweep.progress)
-                word.translateBy(x: 0, y: -Self.lift * eased)
 
-                if sweep.progress < 1 {
-                    var dim = word
-                    dim.opacity = Self.dimmed
-                    dim.draw(run)
-                }
-                guard sweep.progress > 0 else { continue }
+                // The sweep's soft leading edge, in this run's coordinates.
+                let edge = max(bounds.height * 0.45, 6)
+                let front = bounds.minX + (bounds.width + edge) * progress
 
-                var lit = word
-                if sweep.progress < 1 {
-                    let edge = max(bounds.height * 0.45, 6)
-                    let front = bounds.minX + (bounds.width + edge) * sweep.progress
-                    let left = bounds.minX - edge
-                    lit.clipToLayer { mask in
-                        let area = CGRect(x: left, y: bounds.minY - bounds.height, width: max(front - left, 0), height: bounds.height * 3)
-                        mask.fill(Path(area), with: .linearGradient(Gradient(colors: [.white, .white.opacity(0)]),
-                                                                    startPoint: CGPoint(x: max(front - edge, left), y: 0),
-                                                                    endPoint: CGPoint(x: front, y: 0)))
+                for slice in run {
+                    let glyph = slice.typographicBounds.rect
+                    // When the sweep reaches this character, and how far it has risen since.
+                    let share = bounds.width > 0 ? (glyph.midX - bounds.minX) / bounds.width : 0
+                    let reached = sweep.start + Double(share) * sweep.span
+                    let t = min(max((now - reached) / Self.rise, 0), 1)
+                    let risen = 1 - pow(1 - t, 3)
+
+                    var character = word
+                    character.translateBy(x: 0, y: -Self.lift * CGFloat(risen))
+
+                    if progress < 1 {
+                        var dim = character
+                        dim.opacity = Self.dimmed
+                        dim.draw(slice)
                     }
+                    // Lit only once the sweep has reached this character.
+                    guard progress > 0, front > glyph.minX else { continue }
+
+                    var lit = character
+                    if progress < 1 {
+                        let left = bounds.minX - edge
+                        lit.clipToLayer { mask in
+                            let area = CGRect(x: left, y: bounds.minY - bounds.height, width: max(front - left, 0), height: bounds.height * 3)
+                            mask.fill(Path(area), with: .linearGradient(Gradient(colors: [.white, .white.opacity(0)]),
+                                                                        startPoint: CGPoint(x: max(front - edge, left), y: 0),
+                                                                        endPoint: CGPoint(x: front, y: 0)))
+                        }
+                    }
+                    if emphasis > 0 {
+                        lit.addFilter(.shadow(color: .white.opacity(0.55 * emphasis), radius: 12 * emphasis))
+                    }
+                    lit.draw(slice)
                 }
-                if sweep.emphasis > 0 {
-                    lit.addFilter(.shadow(color: .white.opacity(0.6 * sweep.emphasis), radius: 12 * sweep.emphasis))
-                }
-                lit.draw(run)
             }
         }
     }
