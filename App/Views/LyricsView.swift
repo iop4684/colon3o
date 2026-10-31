@@ -27,6 +27,8 @@ struct LyricsView: View {
     @State private var browseEnd: Task<Void, Never>?
     /// Romaji for Japanese lines, by line id (synced) or line number (plain).
     @State private var romaji: [Int: [Romaji.Piece]] = [:]
+    /// Bumped when the romaji changes, so the column can compare one number instead of all of it.
+    @State private var romajiVersion = 0
     @AppStorage(LyricsView.romajiKey) private var showRomaji = true
 
     static let romajiKey = "lyrics.showRomaji"
@@ -100,6 +102,7 @@ struct LyricsView: View {
         fetchedFrom = await Task.detached { LyricsService.fetchedSource(of: file) }.value
         let loaded = lyrics
         romaji = await Task.detached(priority: .userInitiated) { Self.romanize(loaded) }.value
+        romajiVersion += 1
         checking = []
         isLoading = false
     }
@@ -142,21 +145,27 @@ struct LyricsView: View {
             // (which only changes dragOffset below) moves the column without touching any row.
             LyricColumn(lines: lines,
                         romaji: showRomaji ? romaji : [:],
+                        romajiVersion: showRomaji ? romajiVersion : -1,
                         active: active,
                         browsing: browsing,
                         position: position + timingLead,
-                        target: target,
                         onHeight: recordHeight,
                         onSeek: onSeek)
                 .equatable()
                 .padding(.horizontal, 28)
                 .frame(width: geometry.size.width, alignment: .topLeading)
+                // One soft spring moves the whole column to the current line: a single moving
+                // layer, rather than every line animating on its own.
+                .offset(y: target)
+                .animation(.spring(response: 0.75, dampingFraction: 0.86), value: target)
                 .offset(y: dragOffset)
                 .onChange(of: active) { oldValue, newValue in
                     // While you're reading elsewhere, keep your place instead of jumping to the new line.
                     guard browsing else { return }
                     let height = geometry.size.height
-                    dragOffset -= scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
+                    let shift = scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
+                    // Same spring as the column, so the two cancel out and the text stays still.
+                    withAnimation(.spring(response: 0.75, dampingFraction: 0.86)) { dragOffset -= shift }
                 }
         }
         .clipped()
@@ -247,19 +256,19 @@ struct LyricsView: View {
 private struct LyricColumn: View, Equatable {
     let lines: [LyricLine]
     let romaji: [Int: [Romaji.Piece]]
+    let romajiVersion: Int
     let active: Int
     let browsing: Bool
     /// Playback position (with any timing lead), used by the current line and interludes only.
     let position: Double
-    let target: CGFloat
     let onHeight: (Int, CGFloat) -> Void
     let onSeek: (Double) -> Void
 
     static let spacing: CGFloat = 26
 
     static func == (a: LyricColumn, b: LyricColumn) -> Bool {
-        a.active == b.active && a.browsing == b.browsing && a.target == b.target && a.position == b.position
-            && a.lines.count == b.lines.count && a.lines.first?.time == b.lines.first?.time && a.romaji == b.romaji
+        a.active == b.active && a.browsing == b.browsing && a.position == b.position && a.romajiVersion == b.romajiVersion
+            && a.lines.count == b.lines.count && a.lines.first?.time == b.lines.first?.time
     }
 
     var body: some View {
@@ -274,8 +283,6 @@ private struct LyricColumn: View, Equatable {
                          browsing: browsing,
                          position: usesClock ? position : 0,
                          next: line.id + 1 < lines.count ? lines[line.id + 1].time : nil,
-                         target: target,
-                         delay: min(Double(max(line.id - max(active, 0), 0)) * 0.045, 0.25),
                          onHeight: { height in onHeight(line.id, height) },
                          onTap: { onSeek(line.time) })
                     .equatable()
@@ -294,15 +301,12 @@ private struct LyricRow: View, Equatable {
     let browsing: Bool
     let position: Double
     let next: Double?
-    /// The column's offset to bring the current line into place; each row glides there on its own.
-    let target: CGFloat
-    let delay: Double
     let onHeight: (CGFloat) -> Void
     let onTap: () -> Void
 
     static func == (a: LyricRow, b: LyricRow) -> Bool {
         a.line.id == b.line.id && a.isActive == b.isActive && a.distance == b.distance && a.browsing == b.browsing
-            && a.position == b.position && a.target == b.target && a.delay == b.delay && a.romaji == b.romaji
+            && a.position == b.position && a.romaji == b.romaji
             && a.next == b.next && a.line == b.line
     }
 
@@ -310,9 +314,9 @@ private struct LyricRow: View, Equatable {
         content
             // Full height whatever the column's size, so long lines wrap instead of being cut off.
             .fixedSize(horizontal: false, vertical: true)
-            .foregroundStyle(.white.opacity(isActive ? 1 : 0.32))
-            // Blur only near the current line; far lines are faint anyway, and blur is costly.
-            .blur(radius: isActive || browsing || distance > 5 ? 0 : min(Double(distance) * 0.6, 2.4))
+            // No per-line blur: each one is an extra offscreen render, redone on every frame the
+            // lines move. Lines further from the current one just fade a little more.
+            .foregroundStyle(.white.opacity(isActive ? 1 : (browsing ? 0.45 : max(0.32 - Double(max(distance - 2, 0)) * 0.03, 0.2))))
             .scaleEffect(isActive ? 1 : 0.97, anchor: .leading)
             .animation(.easeInOut(duration: 0.6), value: isActive)
             .animation(.easeOut(duration: 0.3), value: browsing)
@@ -320,8 +324,6 @@ private struct LyricRow: View, Equatable {
             .contentShape(Rectangle())
             // Only the height: unaffected by scrolling, so it can't feed back into the scroll.
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight($0) }
-            .offset(y: target)
-            .animation(.spring(response: 0.8, dampingFraction: 0.86).delay(delay), value: target)
             .onTapGesture(perform: onTap)
     }
 
@@ -394,7 +396,7 @@ private struct WordByWordLine: View {
     @State private var anchor = Anchor(position: 0, at: .distantPast)
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !isActive)) { context in
+        TimelineView(.animation(paused: !isActive)) { context in
             let now = estimate(at: context.date)
             VStack(alignment: .leading, spacing: 4) {
                 words.font(LyricsFont.line)

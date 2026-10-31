@@ -1,3 +1,4 @@
+import CoreImage
 import AVKit
 import MediaPlayer
 import SwiftUI
@@ -270,27 +271,59 @@ struct PlayerBackground: View {
     /// Rounded while the player is being pulled down; square (edge to edge) otherwise.
     var cornerRadius: CGFloat = 0
 
+    /// The artwork blurred once, ahead of time. A live full-screen blur is redone by the GPU on
+    /// every frame anything above it moves (the lyrics, all the time), which made the whole
+    /// player stutter; a pre-blurred picture costs nothing to draw.
+    @State private var blurred: UIImage?
+
     var body: some View {
         GeometryReader { geometry in
             ZStack {
                 Color(white: 0.18)
-                if let image {
-                    Image(uiImage: image)
+                if let blurred {
+                    Image(uiImage: blurred)
                         .resizable()
                         .scaledToFill()
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
-                        .blur(radius: 70, opaque: true)
-                        .saturation(1.4)
                         .transition(.opacity)
                 }
                 // Darker than before, like Apple Music, so dimmed and lit lyrics stand apart.
                 LinearGradient(colors: [.black.opacity(0.5), .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
             }
             .clipShape(.rect(cornerRadius: cornerRadius))
+            .drawingGroup()
         }
         .ignoresSafeArea()
-        .animation(.easeInOut(duration: 0.6), value: image)
+        .animation(.easeInOut(duration: 0.6), value: blurred)
+        .task(id: image.map(ObjectIdentifier.init)) {
+            let source = image
+            blurred = await Task.detached(priority: .userInitiated) { Self.blur(source) }.value
+        }
+    }
+
+    nonisolated(unsafe) private static let context = CIContext(options: [.useSoftwareRenderer: false])
+
+    /// Shrinks the artwork to a small thumbnail and blurs that: the same look as a radius-70 blur
+    /// over the full-screen picture, for a fraction of the work, done once per song.
+    nonisolated private static func blur(_ image: UIImage?) -> UIImage? {
+        guard let image, image.size.width > 0, image.size.height > 0 else { return nil }
+        let side: CGFloat = 96
+        let scale = side / max(image.size.width, image.size.height)
+        let size = CGSize(width: max(image.size.width * scale, 1), height: max(image.size.height * scale, 1))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        guard let input = CIImage(image: small) else { return small }
+        let extent = input.extent
+        let output = input.clampedToExtent()
+            .applyingGaussianBlur(sigma: 7)
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.4])
+            .cropped(to: extent)
+        guard let cgImage = context.createCGImage(output, from: extent) else { return small }
+        return UIImage(cgImage: cgImage)
     }
 }
 
