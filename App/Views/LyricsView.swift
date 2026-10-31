@@ -22,6 +22,9 @@ struct LyricsView: View {
     /// How far you've scrolled the lyrics yourself; eases back to 0 after you stop.
     @State private var dragOffset: CGFloat = 0
     @State private var dragStart: CGFloat?
+    /// How far the finger had already moved when the drag was recognised (so the column follows
+    /// from there instead of jumping by that amount).
+    @State private var dragOrigin: CGFloat = 0
     /// While you scroll the lyrics yourself, every line is sharp (no blur), like Apple Music.
     @State private var browsing = false
     @State private var browseEnd: Task<Void, Never>?
@@ -168,7 +171,7 @@ struct LyricsView: View {
                 .offset(y: dragOffset)
                 .onChange(of: active) { oldValue, newValue in
                     // While you're reading elsewhere, keep your place instead of jumping to the new line.
-                    guard browsing else { return }
+                    guard browsing || dragOffset != 0 else { return }
                     let height = geometry.size.height
                     let shift = scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
                     // Same glide as the column, so the two cancel out and the text stays still.
@@ -197,14 +200,24 @@ struct LyricsView: View {
 
     /// How the column moves to a line: an even ease, no bounce.
     static let glide = Animation.smooth(duration: 0.6)
+    /// How far you scroll before the lines brighten for reading.
+    static let browseDistance: CGFloat = 40
 
     private func browseDrag(limits: ClosedRange<CGFloat>) -> some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
-                if dragStart == nil { dragStart = dragOffset }
+                if dragStart == nil {
+                    dragStart = dragOffset
+                    dragOrigin = value.translation.height
+                }
+                let moved = value.translation.height - dragOrigin
                 // Hard stop at the first and last lines: no stretching past them.
-                dragOffset = min(max((dragStart ?? 0) + value.translation.height, limits.lowerBound), limits.upperBound)
-                if !browsing { withAnimation(.easeOut(duration: 0.25)) { browsing = true } }
+                dragOffset = min(max((dragStart ?? 0) + moved, limits.lowerBound), limits.upperBound)
+                // Lines only brighten for reading once you've really scrolled, so a light touch
+                // never makes every line redraw.
+                if !browsing, abs(moved) > Self.browseDistance {
+                    withAnimation(.easeOut(duration: 0.25)) { browsing = true }
+                }
                 browseEnd?.cancel()
             }
             .onEnded { value in
@@ -419,12 +432,13 @@ private struct WordByWordLine: View {
         TimelineView(.animation(paused: !isActive)) { context in
             let now = estimate(at: context.date)
             VStack(alignment: .leading, spacing: 4) {
-                words.font(LyricsFont.line)
-                    .textRenderer(WordSweepRenderer(now: now, isActive: isActive, rise: riseSpan))
+                // Lines that aren't current are plain text: no per-word pieces to build when they redraw.
+                (isActive ? words : Text(line.text)).font(LyricsFont.line)
+                    .textRenderer(WordSweepRenderer(now: now, isActive: isActive))
                 if let romaji {
-                    romajiText(romaji)
+                    (isActive ? romajiText(romaji) : Text(romaji.map(\.text).joined(separator: " ")))
                         .font(LyricsFont.romaji)
-                        .textRenderer(WordSweepRenderer(now: now, isActive: isActive, rise: riseSpan))
+                        .textRenderer(WordSweepRenderer(now: now, isActive: isActive))
                 }
             }
         }
@@ -454,14 +468,6 @@ private struct WordByWordLine: View {
         let next = index + 1 < words.count ? words[index + 1].time : word.time + 1
         let end = knownEnd ?? min(next, word.time + 1)
         return (word.time, max(end, word.time + 0.05), knownEnd != nil)
-    }
-
-    /// The time the gentle rise travels across the line: from the first word to the last, at an
-    /// even pace whatever the singing does, so the lyrics and the romaji lift together.
-    private var riseSpan: ClosedRange<Double> {
-        guard !line.words.isEmpty else { return line.time...line.time + 1 }
-        let start = timing(0).start
-        return start...max(timing(line.words.count - 1).end, start + 0.5)
     }
 
     /// When the character at this point of the line (UTF-16 offset) is sung: its word's time,
@@ -531,8 +537,6 @@ private struct WordSweep: TextAttribute {
 private struct WordSweepRenderer: TextRenderer {
     let now: Double
     var isActive = true
-    /// When the rise starts at the line's first character and reaches its last.
-    var rise: ClosedRange<Double> = 0...1
 
     /// Unsung words on the current line: dimmed, but less than other lines (as in Apple Music),
     /// so the line reads as current straight away.
@@ -540,21 +544,47 @@ private struct WordSweepRenderer: TextRenderer {
     /// How far sung text has risen, in points.
     static let lift: CGFloat = 2.5
     /// How long a character takes to rise once the sweep reaches it, in seconds.
-    static let riseDuration = 1.1
+    static let riseDuration = 0.9
+    /// Characters either side whose timings are averaged for the rise, to even out bursts.
+    static let riseSmoothing = 3
 
     /// Room for the glow and swell to draw past the text's edges.
     var displayPadding: EdgeInsets { EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16) }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
-        // The rise moves through the text in reading order at an even pace, measured by width,
-        // so every character lifts the same way and neighbours overlap smoothly.
-        var totalWidth: CGFloat = 0
-        for line in layout { for run in line { for slice in run { totalWidth += slice.typographicBounds.width } } }
-        var passed: CGFloat = 0
+        guard isActive else {
+            for line in layout { context.draw(line) }
+            return
+        }
+        // The rise follows the highlight: each character lifts as the sweep reaches it, but with
+        // its timing averaged with its neighbours', so a burst of quick words rolls up as one
+        // even wave instead of popping, and a held note doesn't stall it.
+        var reached: [Double] = []
         for line in layout {
             for run in line {
-                guard isActive, let sweep = run[WordSweep.self] else {
-                    for slice in run { passed += slice.typographicBounds.width }
+                let sweep = run[WordSweep.self]
+                let bounds = run.typographicBounds.rect
+                for slice in run {
+                    guard let sweep else {
+                        reached.append(reached.last ?? now)
+                        continue
+                    }
+                    let glyph = slice.typographicBounds.rect
+                    let share = bounds.width > 0 ? Double((glyph.midX - bounds.minX) / bounds.width) : 0
+                    reached.append(sweep.start + share * sweep.span)
+                }
+            }
+        }
+        let smoothed = reached.indices.map { index -> Double in
+            let window = reached[max(index - Self.riseSmoothing, 0)...min(index + Self.riseSmoothing, reached.count - 1)]
+            return window.reduce(0, +) / Double(window.count)
+        }
+        var glyphIndex = 0
+
+        for line in layout {
+            for run in line {
+                guard let sweep = run[WordSweep.self] else {
+                    glyphIndex += run.count
                     context.draw(run)
                     continue
                 }
@@ -576,11 +606,11 @@ private struct WordSweepRenderer: TextRenderer {
 
                 for slice in run {
                     let glyph = slice.typographicBounds.rect
-                    // When the sweep reaches this character, and how far it has risen since.
-                    let share = totalWidth > 0 ? Double((passed + glyph.width / 2) / totalWidth) : 0
-                    passed += glyph.width
-                    let reached = rise.lowerBound + share * (rise.upperBound - rise.lowerBound)
-                    let t = min(max((now - reached) / Self.riseDuration + 0.5, 0), 1)
+                    // How far this character has risen: an even ease centred on when the
+                    // (smoothed) sweep reaches it.
+                    let reach = glyphIndex < smoothed.count ? smoothed[glyphIndex] : now
+                    glyphIndex += 1
+                    let t = min(max((now - reach) / Self.riseDuration + 0.5, 0), 1)
                     let risen = 0.5 - 0.5 * cos(.pi * t)
 
                     var character = word
