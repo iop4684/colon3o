@@ -58,11 +58,10 @@ struct NowPlayingView: View {
         }
         .padding(.horizontal, 28)
         .foregroundStyle(.white)
-        .background { PlayerBackground(image: player.artwork) }
+        .background { PlayerBackground(image: player.artwork, cornerRadius: dragOffset > 0 ? 44 : 0) }
         .environment(\.colorScheme, .dark)
         // Full screen like Apple Music; pull down anywhere outside the lyrics, queue and sliders
         // to close it, with the app showing through behind as it moves.
-        .clipShape(.rect(cornerRadius: dragOffset > 0 ? 44 : 0))
         .offset(y: dragOffset)
         .gesture(dismissDrag)
         .onDisappear { dragOffset = 0 }
@@ -262,6 +261,8 @@ struct ClockedLyrics: View {
 /// Blurred, darkened artwork filling the screen.
 struct PlayerBackground: View {
     let image: UIImage?
+    /// Rounded while the player is being pulled down; square (edge to edge) otherwise.
+    var cornerRadius: CGFloat = 0
 
     var body: some View {
         GeometryReader { geometry in
@@ -279,6 +280,7 @@ struct PlayerBackground: View {
                 }
                 LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
             }
+            .clipShape(.rect(cornerRadius: cornerRadius))
         }
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 0.6), value: image)

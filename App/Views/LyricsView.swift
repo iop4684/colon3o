@@ -195,10 +195,10 @@ private struct WordByWordLine: View {
 
     @State private var anchor = Anchor(position: 0, at: .distantPast)
 
-    /// The sweep runs ahead of the singing: it starts this much early…
-    static let lead = 0.12
-    /// …and takes this share of the word's length, so it never feels behind.
-    static let pace = 0.65
+    /// How early the sweep starts, in seconds (0: right on the word's time).
+    static let lead = 0.0
+    /// Share of the word's length the sweep takes (1: constant speed over the whole word, like Apple Music).
+    static let pace = 1.0
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60)) { context in
@@ -252,8 +252,9 @@ private struct WordSweep: TextAttribute {
 /// Draws each word dimmed, then the sung part over it at full brightness through a mask whose
 /// soft edge moves left to right.
 private struct WordSweepRenderer: TextRenderer {
-    /// Same as the other lines' dimming.
-    static let dimmed = 0.32
+    /// Unsung words on the current line: dimmed, but less than other lines (as in Apple Music),
+    /// so the line reads as current straight away.
+    static let dimmed = 0.65
     /// How far a fully sung word has floated up, in points.
     static let lift: CGFloat = 1.5
 
