@@ -139,31 +139,27 @@ struct LyricsView: View {
             VStack(alignment: .leading, spacing: 26) {
                 ForEach(lines) { line in
                     let isActive = line.id == active
-                    let distance = active < 0 ? 1 : abs(line.id - active)
-                    let next = line.id + 1 < lines.count ? lines[line.id + 1].time : nil
-                    lineBlock(line, isActive: isActive, next: next)
-                        // Full height whatever the column's size, so long lines wrap instead of being cut off.
-                        .fixedSize(horizontal: false, vertical: true)
-                        .foregroundStyle(.white.opacity(isActive ? 1 : 0.32))
-                        .blur(radius: isActive || browsing ? 0 : min(Double(distance) * 0.6, 2.4))
-                        .scaleEffect(isActive ? 1 : 0.97, anchor: .leading)
-                        .animation(.easeInOut(duration: 0.6), value: active)
-                        .animation(.easeOut(duration: 0.3), value: browsing)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("lyricsColumn")) } action: { frame in
-                            lineFrames[line.id] = frame
-                        }
-                        .offset(y: target + dragOffset)
-                        // Only a line change animates the column; layout changes (romaji arriving) just settle.
-                        .animation(.spring(response: 0.8, dampingFraction: 0.86).delay(stagger(line.id, active: active)),
-                                   value: active)
-                        .onTapGesture { onSeek(line.time) }
+                    // Each row is its own view that only redraws when what it shows changes: a
+                    // position tick reaches the current row only, and scrolling by hand moves the
+                    // whole column at once instead of every row.
+                    LyricRow(line: line,
+                             romaji: showRomaji ? romaji[line.id] : nil,
+                             isActive: isActive,
+                             distance: active < 0 ? 1 : abs(line.id - active),
+                             browsing: browsing,
+                             position: isActive || line.text == "♪" ? position + timingLead : 0,
+                             next: line.id + 1 < lines.count ? lines[line.id + 1].time : nil,
+                             target: target,
+                             delay: stagger(line.id, active: active),
+                             onFrame: { frame in lineFrames[line.id] = frame },
+                             onTap: { onSeek(line.time) })
+                        .equatable()
                 }
             }
             .coordinateSpace(.named("lyricsColumn"))
             .padding(.horizontal, 28)
             .frame(width: geometry.size.width, alignment: .topLeading)
+            .offset(y: dragOffset)
             .onChange(of: active) { oldValue, newValue in
                 // While you're reading elsewhere, keep your place instead of jumping to the new line.
                 guard browsing else { return }
@@ -210,25 +206,6 @@ struct LyricsView: View {
             }
     }
 
-    /// The current line fills word by word when the lyrics have word timings; every other line
-    /// (and lyrics without them) is plain text. Romaji, when on, sits under Japanese lines.
-    @ViewBuilder
-    private func lineBlock(_ line: LyricLine, isActive: Bool, next: Double?) -> some View {
-        let romaji = showRomaji ? romaji[line.id] : nil
-        if line.text == "♪", line.words.isEmpty {
-            InterludeDots(start: line.time, end: next ?? line.time + 8, position: position + timingLead, isActive: isActive)
-        } else if !line.words.isEmpty {
-            // The same view whether current or not, so a line that stops being current just dims
-            // where it is, instead of a copy fading out behind the scrolling lines.
-            WordByWordLine(line: line, romaji: romaji, position: isActive ? position + timingLead : 0, isActive: isActive)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(line.text).font(LyricsFont.line)
-                if let romaji { Text(romaji.map(\.text).joined(separator: " ")).font(LyricsFont.romaji) }
-            }
-        }
-    }
-
     private func plain(_ lines: [String]) -> some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
@@ -266,6 +243,63 @@ struct LyricsView: View {
             .init(color: .black, location: 0.85),
             .init(color: .clear, location: 1),
         ], startPoint: .top, endPoint: .bottom)
+    }
+}
+
+/// One line of synced lyrics in the column. Equatable on what it shows, so SwiftUI skips it when
+/// nothing about it changed (the callbacks don't count).
+private struct LyricRow: View, Equatable {
+    let line: LyricLine
+    let romaji: [Romaji.Piece]?
+    let isActive: Bool
+    let distance: Int
+    let browsing: Bool
+    let position: Double
+    let next: Double?
+    /// The column's offset to bring the current line into place; each row glides there on its own.
+    let target: CGFloat
+    let delay: Double
+    let onFrame: (CGRect) -> Void
+    let onTap: () -> Void
+
+    static func == (a: LyricRow, b: LyricRow) -> Bool {
+        a.line.id == b.line.id && a.isActive == b.isActive && a.distance == b.distance && a.browsing == b.browsing
+            && a.position == b.position && a.target == b.target && a.delay == b.delay && a.romaji == b.romaji
+            && a.next == b.next && a.line == b.line
+    }
+
+    var body: some View {
+        content
+            // Full height whatever the column's size, so long lines wrap instead of being cut off.
+            .fixedSize(horizontal: false, vertical: true)
+            .foregroundStyle(.white.opacity(isActive ? 1 : 0.32))
+            // Blur only near the current line; far lines are faint anyway, and blur is costly.
+            .blur(radius: isActive || browsing || distance > 5 ? 0 : min(Double(distance) * 0.6, 2.4))
+            .scaleEffect(isActive ? 1 : 0.97, anchor: .leading)
+            .animation(.easeInOut(duration: 0.6), value: isActive)
+            .animation(.easeOut(duration: 0.3), value: browsing)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("lyricsColumn")) } action: { onFrame($0) }
+            .offset(y: target)
+            .animation(.spring(response: 0.8, dampingFraction: 0.86).delay(delay), value: target)
+            .onTapGesture(perform: onTap)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if line.text == "♪", line.words.isEmpty {
+            InterludeDots(start: line.time, end: next ?? line.time + 8, position: position, isActive: isActive)
+        } else if !line.words.isEmpty {
+            // The same view whether current or not, so a line that stops being current just dims
+            // where it is, instead of a copy fading out behind the scrolling lines.
+            WordByWordLine(line: line, romaji: romaji, position: position, isActive: isActive)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(line.text).font(LyricsFont.line)
+                if let romaji { Text(romaji.map(\.text).joined(separator: " ")).font(LyricsFont.romaji) }
+            }
+        }
     }
 }
 
@@ -491,16 +525,20 @@ private struct WordSweepRenderer: TextRenderer {
                     var character = word
                     character.translateBy(x: 0, y: -Self.lift * CGFloat(risen))
 
-                    if progress < 1 {
+                    // Characters the sweep has fully passed are simply lit, and ones it hasn't
+                    // reached simply dim; only the one or two under its soft edge need the
+                    // (costly) mask, which keeps each frame cheap.
+                    let fullyLit = progress >= 1 || front - edge >= glyph.maxX
+                    let unlit = progress <= 0 || front <= glyph.minX
+                    if !fullyLit {
                         var dim = character
                         dim.opacity = Self.dimmed
                         dim.draw(slice)
                     }
-                    // Lit only once the sweep has reached this character.
-                    guard progress > 0, front > glyph.minX else { continue }
+                    guard !unlit else { continue }
 
                     var lit = character
-                    if progress < 1 {
+                    if !fullyLit {
                         let left = bounds.minX - edge
                         lit.clipToLayer { mask in
                             let area = CGRect(x: left, y: bounds.minY - bounds.height, width: max(front - left, 0), height: bounds.height * 3)
