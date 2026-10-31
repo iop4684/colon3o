@@ -226,8 +226,8 @@ struct LyricsView: View {
     }
 }
 
-/// An instrumental break, shown as three dots like Apple Music: on the current line they fill
-/// one after another across the break and gently breathe.
+/// An instrumental break, shown as three dots like Apple Music: still, and on the current line
+/// they light up one after another across the break, fading in like sung words.
 private struct InterludeDots: View {
     let start: Double
     let end: Double
@@ -235,20 +235,17 @@ private struct InterludeDots: View {
     let isActive: Bool
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isActive)) { context in
-            let progress = min(max((position - start) / max(end - start, 0.1), 0), 1)
-            let breath = isActive ? 1 + 0.12 * sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi * 0.7) : 1
-            HStack(spacing: 10) {
-                ForEach(0..<3, id: \.self) { index in
-                    let fill = isActive ? min(max(progress * 3 - Double(index), 0), 1) : 0
-                    Circle()
-                        .opacity(isActive ? 0.45 + 0.55 * fill : 1)
-                        .frame(width: 12, height: 12)
-                }
+        let progress = min(max((position - start) / max(end - start, 0.1), 0), 1)
+        HStack(spacing: 10) {
+            ForEach(0..<3, id: \.self) { index in
+                let fill = isActive ? min(max(progress * 3 - Double(index), 0), 1) : 0
+                Circle()
+                    .opacity(isActive ? 0.65 + 0.35 * fill : 1)
+                    .frame(width: 12, height: 12)
             }
-            .scaleEffect(breath, anchor: .leading)
-            .frame(height: 38, alignment: .leading)
         }
+        .animation(.linear(duration: 0.25), value: progress)
+        .frame(height: 38, alignment: .leading)
     }
 }
 
