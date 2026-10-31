@@ -63,6 +63,7 @@ struct Colon3App: App {
         _library = StateObject(wrappedValue: library)
         _soulseek = StateObject(wrappedValue: soulseek)
         _player = StateObject(wrappedValue: player)
+        playerActions = PlayerActions(player)
         _lastfm = StateObject(wrappedValue: lastfm)
         _stats = StateObject(wrappedValue: stats)
         _wifi = StateObject(wrappedValue: wifi)
@@ -71,9 +72,13 @@ struct Colon3App: App {
         _trending = StateObject(wrappedValue: trending)
     }
 
+    /// The player for menus that only run actions on it (see PlayerActions).
+    private let playerActions: PlayerActions
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.playerActions, playerActions)
                 .environmentObject(soulseek)
                 .environmentObject(library)
                 .environmentObject(player)

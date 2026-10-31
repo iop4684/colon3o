@@ -88,6 +88,8 @@ final class AppRouter: ObservableObject {
     @Published var playlistImport: ImportSheetRoute?
     /// The restore sheet.
     @Published var backupRestore: BackupRestoreRequest?
+    /// Song Info, from a song's long-press menu.
+    @Published var songInfo: Track?
 
     init() {
         // The Home tab is hidden in this fork; a saved Home selection opens Library instead.

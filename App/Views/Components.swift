@@ -169,23 +169,42 @@ struct TrackRow: View {
 }
 
 /// Play next / queue / favourite / delete, shared by every list of songs.
+/// The player, for views that only run actions on it (play next, add to queue). Reaching it
+/// through here doesn't redraw the view whenever the player changes, which matters for long-press
+/// menus: an open menu that redraws flickers (the song's artwork loading mid-song was enough).
+final class PlayerActions {
+    private(set) weak var player: Player?
+    init(_ player: Player?) { self.player = player }
+}
+
+private struct PlayerActionsKey: EnvironmentKey {
+    static let defaultValue = PlayerActions(nil)
+}
+
+extension EnvironmentValues {
+    var playerActions: PlayerActions {
+        get { self[PlayerActionsKey.self] }
+        set { self[PlayerActionsKey.self] = newValue }
+    }
+}
+
 struct TrackMenuItems: View {
     let tracks: [Track]
     var album: Album?
     let onDelete: ([Track]) -> Void
 
-    @EnvironmentObject private var player: Player
+    @Environment(\.playerActions) private var actions
     @EnvironmentObject private var favorites: FavoritesStore
     @EnvironmentObject private var router: AppRouter
 
     var body: some View {
         Button {
-            player.playNext(tracks)
+            actions.player?.playNext(tracks)
         } label: {
             Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
         }
         Button {
-            player.addToQueue(tracks)
+            actions.player?.addToQueue(tracks)
         } label: {
             Label("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward")
         }
@@ -222,6 +241,11 @@ struct TrackMenuItems: View {
             }
         }
         if tracks.count == 1, let track = tracks.first {
+            Button {
+                router.songInfo = track
+            } label: {
+                Label("Song Info", systemImage: "info.circle")
+            }
             ShareLink(item: track.url) {
                 Label("Share File", systemImage: "square.and.arrow.up")
             }
