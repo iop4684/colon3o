@@ -6,8 +6,21 @@ import Foundation
 /// the next consonant (itte), long vowels are written as spelled (moumokuteki), particles read as
 /// spoken (wa, e, wo). Readings of unusual kanji can be off; nothing goes over the network.
 enum Romaji {
+    /// One romaji word and the stretch of the original line (in UTF-16 units) it reads.
+    struct Piece: Hashable {
+        let text: String
+        let location: Int
+        let length: Int
+    }
+
     /// nil when the text has no Japanese in it.
     static func of(_ text: String) -> String? {
+        pieces(text).map { $0.map(\.text).joined(separator: " ") }
+    }
+
+    /// The line's romaji, word by word, each tied to the characters it reads, so it can be lit in
+    /// time with them. nil when the text has no Japanese in it.
+    static func pieces(_ text: String) -> [Piece]? {
         guard containsJapanese(text) else { return nil }
         let string = text as CFString
         let range = CFRange(location: 0, length: CFStringGetLength(string))
@@ -15,7 +28,7 @@ enum Romaji {
                                                       Locale(identifier: "ja") as CFLocale) else { return nil }
 
         // Each word's reading in hiragana, and whether it stands on its own in romaji.
-        var words: [(kana: String, attaches: Bool)] = []
+        var words: [(kana: String, attaches: Bool, range: CFRange)] = []
         var previousToken: String?
         while !CFStringTokenizerAdvanceToNextToken(tokenizer).isEmpty {
             let tokenRange = CFStringTokenizerGetCurrentTokenRange(tokenizer)
@@ -40,23 +53,23 @@ enum Romaji {
             } else {
                 attaches = !previousStandsAlone && (previousEndsInSokuon || (isHiragana(token) && !standalone.contains(token)))
             }
-            words.append((readings[token] ?? kana, attaches))
+            words.append((readings[token] ?? kana, attaches, tokenRange))
             previousToken = token
         }
 
-        var groups: [String] = []
+        var groups: [(kana: String, start: Int, end: Int)] = []
         for word in words {
+            let end = word.range.location + word.range.length
             if word.attaches, let last = groups.popLast() {
-                groups.append(last + word.kana)
+                groups.append((last.kana + word.kana, last.start, end))
             } else {
-                groups.append(word.kana)
+                groups.append((word.kana, word.range.location, end))
             }
         }
-        let result = groups.map { group in
-            particles[group] ?? spell(group)
+        let result = groups.compactMap { group -> Piece? in
+            let text = particles[group.kana] ?? spell(group.kana)
+            return text.isEmpty ? nil : Piece(text: text, location: group.start, length: group.end - group.start)
         }
-        .filter { !$0.isEmpty }
-        .joined(separator: " ")
         return result.isEmpty ? nil : result
     }
 

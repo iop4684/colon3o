@@ -24,7 +24,7 @@ struct LyricsView: View {
     @State private var browsing = false
     @State private var browseEnd: Task<Void, Never>?
     /// Romaji for Japanese lines, by line id (synced) or line number (plain).
-    @State private var romaji: [Int: String] = [:]
+    @State private var romaji: [Int: [Romaji.Piece]] = [:]
     @AppStorage(LyricsView.romajiKey) private var showRomaji = true
 
     static let romajiKey = "lyrics.showRomaji"
@@ -102,13 +102,13 @@ struct LyricsView: View {
         isLoading = false
     }
 
-    nonisolated private static func romanize(_ lyrics: Lyrics?) -> [Int: String] {
-        var result: [Int: String] = [:]
+    nonisolated private static func romanize(_ lyrics: Lyrics?) -> [Int: [Romaji.Piece]] {
+        var result: [Int: [Romaji.Piece]] = [:]
         switch lyrics {
         case let .synced(lines):
-            for line in lines { result[line.id] = Romaji.of(line.text) }
+            for line in lines { result[line.id] = Romaji.pieces(line.text) }
         case let .plain(lines):
-            for (index, line) in lines.enumerated() { result[index] = Romaji.of(line) }
+            for (index, line) in lines.enumerated() { result[index] = Romaji.pieces(line) }
         default:
             break
         }
@@ -142,6 +142,8 @@ struct LyricsView: View {
                     let distance = active < 0 ? 1 : abs(line.id - active)
                     let next = line.id + 1 < lines.count ? lines[line.id + 1].time : nil
                     lineBlock(line, isActive: isActive, next: next)
+                        // Full height whatever the column's size, so long lines wrap instead of being cut off.
+                        .fixedSize(horizontal: false, vertical: true)
                         .transition(.opacity)
                         .foregroundStyle(.white.opacity(isActive ? 1 : 0.32))
                         .blur(radius: isActive || browsing ? 0 : min(Double(distance) * 0.6, 2.4))
@@ -154,8 +156,9 @@ struct LyricsView: View {
                             lineFrames[line.id] = frame
                         }
                         .offset(y: target + dragOffset)
+                        // Only a line change animates the column; layout changes (romaji arriving) just settle.
                         .animation(.spring(response: 0.8, dampingFraction: 0.86).delay(stagger(line.id, active: active)),
-                                   value: target)
+                                   value: active)
                         .onTapGesture { onSeek(line.time) }
                 }
             }
@@ -220,7 +223,7 @@ struct LyricsView: View {
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(line.text).font(LyricsFont.line)
-                if let romaji { Text(romaji).font(LyricsFont.romaji) }
+                if let romaji { Text(romaji.map(\.text).joined(separator: " ")).font(LyricsFont.romaji) }
             }
         }
     }
@@ -232,8 +235,8 @@ struct LyricsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(line.isEmpty ? " " : line)
                             .font(.system(size: 26, weight: .bold))
-                        if showRomaji, let romaji = romaji[index] {
-                            Text(romaji).font(.system(size: 15, weight: .semibold)).opacity(0.75)
+                        if showRomaji, let pieces = romaji[index] {
+                            Text(pieces.map(\.text).joined(separator: " ")).font(.system(size: 15, weight: .semibold)).opacity(0.75)
                         }
                     }
                     .foregroundStyle(.white.opacity(0.85))
@@ -304,7 +307,7 @@ enum LyricsFont {
 /// stutters backwards; a pause stops it within a fraction of a second.
 private struct WordByWordLine: View {
     let line: LyricLine
-    let romaji: String?
+    let romaji: [Romaji.Piece]?
     let position: Double
 
     private struct Anchor {
@@ -320,9 +323,8 @@ private struct WordByWordLine: View {
             VStack(alignment: .leading, spacing: 4) {
                 words.font(LyricsFont.line)
                     .textRenderer(WordSweepRenderer(now: now))
-                if let romaji, let span = lineSpan {
-                    Text(romaji)
-                        .customAttribute(WordSweep(index: 0, start: span.start, span: span.end - span.start, holds: false))
+                if let romaji {
+                    romajiText(romaji)
                         .font(LyricsFont.romaji)
                         .textRenderer(WordSweepRenderer(now: now))
                 }
@@ -353,9 +355,33 @@ private struct WordByWordLine: View {
         return (word.time, max(end, word.time + 0.05), knownEnd != nil)
     }
 
-    private var lineSpan: (start: Double, end: Double)? {
-        guard !line.words.isEmpty else { return nil }
-        return (timing(0).start, timing(line.words.count - 1).end)
+    /// When the character at this point of the line (UTF-16 offset) is sung: its word's time,
+    /// shared out evenly across the word's characters.
+    private func time(at offset: Int) -> Double {
+        var start = 0
+        for index in line.words.indices {
+            let length = line.words[index].text.utf16.count
+            if offset < start + length || index == line.words.count - 1 {
+                let time = timing(index)
+                let share = length > 0 ? Double(min(max(offset - start, 0), length)) / Double(length) : 0
+                return time.start + (time.end - time.start) * share
+            }
+            start += length
+        }
+        return line.time
+    }
+
+    /// Each romaji word lights up over the same time as the characters it reads.
+    private func romajiText(_ pieces: [Romaji.Piece]) -> Text {
+        var result = Text("")
+        for (index, piece) in pieces.enumerated() {
+            if index > 0 { result = result + Text(" ") }
+            let start = time(at: piece.location)
+            let end = time(at: piece.location + piece.length)
+            result = result + Text(piece.text)
+                .customAttribute(WordSweep(index: index, start: start, span: max(end - start, 0.05), holds: false))
+        }
+        return result
     }
 
     private var words: Text {
