@@ -11,17 +11,41 @@ enum Romaji {
         guard let tokenizer = CFStringTokenizerCreate(nil, string, range, kCFStringTokenizerUnitWord,
                                                       Locale(identifier: "ja") as CFLocale) else { return nil }
         var words: [String] = []
+        // っ at the end of a word doubles the next consonant (言って → itte, not itsute).
+        var doubleNext = false
         while !CFStringTokenizerAdvanceToNextToken(tokenizer).isEmpty {
             let tokenRange = CFStringTokenizerGetCurrentTokenRange(tokenizer)
             let token = (CFStringCreateWithSubstring(nil, string, tokenRange) as String?) ?? ""
+            var piece: String
             if let particle = particles[token] {
-                words.append(particle)
+                piece = particle
             } else if let latin = CFStringTokenizerCopyCurrentTokenAttribute(tokenizer, kCFStringTokenizerAttributeLatinTranscription) as? String,
                       !latin.isEmpty {
-                words.append(plainVowels(latin))
-            } else if !token.isEmpty {
-                words.append(token)
+                piece = plainVowels(latin)
+            } else {
+                piece = token
             }
+
+            let endsInSokuon = token.hasSuffix("っ") || token.hasSuffix("ッ")
+            if endsInSokuon {
+                for tail in ["xtsu", "ltsu", "xtu", "ltu", "tsu"] where piece.hasSuffix(tail) {
+                    piece.removeLast(tail.count)
+                    break
+                }
+            }
+            if doubleNext, let first = piece.first, first.isLetter, !"aeiou".contains(first) {
+                piece = String(first) + piece
+            }
+
+            // Endings written in kana (て, てる, ます…) belong to the word before them, as in
+            // Apple Music's "kidzuiteru"; particles stand on their own.
+            let attaches = !words.isEmpty && (doubleNext || (isHiragana(token) && !standalone.contains(token)))
+            if attaches {
+                words[words.count - 1] += piece
+            } else if !piece.isEmpty {
+                words.append(piece)
+            }
+            doubleNext = endsInSokuon
         }
         let result = words.joined(separator: " ")
         return result.isEmpty ? nil : result
@@ -29,6 +53,15 @@ enum Romaji {
 
     /// Particles read differently from how they're written.
     private static let particles = ["は": "wa", "へ": "e", "を": "wo"]
+
+    /// Kana words that stand apart in romaji (particles and interjections), rather than joining
+    /// the word before them.
+    private static let standalone: Set<String> = ["は", "が", "を", "に", "で", "と", "の", "へ", "も", "や", "か",
+                                                  "ね", "よ", "な", "わ", "ぞ", "さ", "から", "まで", "より", "けど", "ほら"]
+
+    private static func isHiragana(_ text: String) -> Bool {
+        !text.isEmpty && text.unicodeScalars.allSatisfy { (0x3040...0x309F).contains($0.value) }
+    }
 
     /// Long vowels spelled out, as Apple Music shows them ("moumokuteki", not "mōmokuteki").
     private static func plainVowels(_ text: String) -> String {

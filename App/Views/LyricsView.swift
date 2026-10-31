@@ -16,6 +16,9 @@ struct LyricsView: View {
     /// Where the lyrics on screen were fetched from (nil for files you added).
     @State private var fetchedFrom: String?
     @State private var userScrolledAt: Date?
+    /// While you scroll the lyrics yourself, every line is sharp (no blur), like Apple Music.
+    @State private var browsing = false
+    @State private var browseEnd: Task<Void, Never>?
     /// Romaji for Japanese lines, by line id (synced) or line number (plain).
     @State private var romaji: [Int: String] = [:]
     @AppStorage(LyricsView.romajiKey) private var showRomaji = true
@@ -129,9 +132,10 @@ struct LyricsView: View {
                 VStack(alignment: .leading, spacing: 26) {
                     ForEach(lines) { line in
                         let distance = active < 0 ? 1 : abs(line.id - active)
-                        lineBlock(line, isActive: line.id == active)
+                        let next = line.id + 1 < lines.count ? lines[line.id + 1].time : nil
+                        lineBlock(line, isActive: line.id == active, next: next)
                             .foregroundStyle(.white.opacity(line.id == active ? 1 : 0.32))
-                            .blur(radius: line.id == active ? 0 : min(Double(distance) * 0.6, 2.4))
+                            .blur(radius: line.id == active || browsing ? 0 : min(Double(distance) * 0.6, 2.4))
                             .scaleEffect(line.id == active ? 1 : 0.97, anchor: .leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
@@ -143,7 +147,16 @@ struct LyricsView: View {
                 .padding(.vertical, 140)
                 .animation(.easeOut(duration: 0.35), value: active)
             }
-            .simultaneousGesture(DragGesture().onChanged { _ in userScrolledAt = Date() })
+            .simultaneousGesture(DragGesture().onChanged { _ in
+                userScrolledAt = Date()
+                if !browsing { withAnimation(.easeOut(duration: 0.25)) { browsing = true } }
+                browseEnd?.cancel()
+                browseEnd = Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeInOut(duration: 0.6)) { browsing = false }
+                }
+            })
             .onChange(of: active) { _, newValue in
                 // Don't yank the view while the user is reading ahead.
                 if let userScrolledAt, Date().timeIntervalSince(userScrolledAt) < 4 { return }
@@ -159,9 +172,11 @@ struct LyricsView: View {
     /// The current line fills word by word when the lyrics have word timings; every other line
     /// (and lyrics without them) is plain text. Romaji, when on, sits under Japanese lines.
     @ViewBuilder
-    private func lineBlock(_ line: LyricLine, isActive: Bool) -> some View {
+    private func lineBlock(_ line: LyricLine, isActive: Bool, next: Double?) -> some View {
         let romaji = showRomaji ? romaji[line.id] : nil
-        if isActive, !line.words.isEmpty {
+        if line.text == "♪", line.words.isEmpty {
+            InterludeDots(start: line.time, end: next ?? line.time + 8, position: position + timingLead, isActive: isActive)
+        } else if isActive, !line.words.isEmpty {
             WordByWordLine(line: line, romaji: romaji, position: position + timingLead)
         } else {
             VStack(alignment: .leading, spacing: 4) {
@@ -208,6 +223,32 @@ struct LyricsView: View {
             .init(color: .black, location: 0.85),
             .init(color: .clear, location: 1),
         ], startPoint: .top, endPoint: .bottom)
+    }
+}
+
+/// An instrumental break, shown as three dots like Apple Music: on the current line they fill
+/// one after another across the break and gently breathe.
+private struct InterludeDots: View {
+    let start: Double
+    let end: Double
+    let position: Double
+    let isActive: Bool
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isActive)) { context in
+            let progress = min(max((position - start) / max(end - start, 0.1), 0), 1)
+            let breath = isActive ? 1 + 0.12 * sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi * 0.7) : 1
+            HStack(spacing: 10) {
+                ForEach(0..<3, id: \.self) { index in
+                    let fill = isActive ? min(max(progress * 3 - Double(index), 0), 1) : 0
+                    Circle()
+                        .opacity(isActive ? 0.45 + 0.55 * fill : 1)
+                        .frame(width: 12, height: 12)
+                }
+            }
+            .scaleEffect(breath, anchor: .leading)
+            .frame(height: 38, alignment: .leading)
+        }
     }
 }
 
