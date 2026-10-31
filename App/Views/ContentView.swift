@@ -10,16 +10,16 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $router.tab) {
-            Tab("Library", systemImage: "music.note.house", value: AppTab.library) {
-                LibraryView().modifier(FallbackMiniPlayer(open: openPlayer))
-            }
-            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                SearchView().modifier(FallbackMiniPlayer(open: openPlayer))
-            }
             Tab("Downloads", systemImage: "arrow.down.circle", value: AppTab.downloads) {
                 DownloadsView().modifier(FallbackMiniPlayer(open: openPlayer))
             }
             .badge(soulseek.activeDownloadCount)
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                SearchView().modifier(FallbackMiniPlayer(open: openPlayer))
+            }
+            Tab("Library", systemImage: "music.note.house", value: AppTab.library) {
+                LibraryView().modifier(FallbackMiniPlayer(open: openPlayer))
+            }
             Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                 SettingsView()
             }

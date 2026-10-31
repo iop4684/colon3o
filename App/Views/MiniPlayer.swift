@@ -128,11 +128,11 @@ struct TabAccessoryMiniPlayer: ViewModifier {
             // isEnabled hides the accessory cleanly; toggling the modifier itself rebuilds the TabView.
             content
                 .tabViewBottomAccessory(isEnabled: isVisible) { AccessoryMiniPlayer(open: open) }
-                .tabBarMinimizeBehavior(.onScrollDown)
+                .tabBarMinimizeBehavior(.never)  // This fork keeps the tab bar full size.
         } else if #available(iOS 26, *) {
             content
                 .tabViewBottomAccessory { AccessoryMiniPlayer(open: open) }
-                .tabBarMinimizeBehavior(.onScrollDown)
+                .tabBarMinimizeBehavior(.never)  // This fork keeps the tab bar full size.
         } else {
             content
         }
