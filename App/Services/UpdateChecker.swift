@@ -51,9 +51,8 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    // Points at this fork, so the app never offers to replace it with the original's builds.
-    static let siteRoot = "https://iop4684.github.io/colon30/"
-    nonisolated static let repository = "https://github.com/iop4684/colon30"
+    static let siteRoot = "https://aminewallah.github.io/colon3/"
+    nonisolated static let repository = "https://github.com/AmineWallah/colon3"
 
     @Published private(set) var state: State = .idle
     @Published private(set) var lastChecked: Date?
@@ -114,7 +113,9 @@ final class UpdateChecker: ObservableObject {
             let remote = try JSONDecoder().decode(Remote.self, from: data)
             lastChecked = Date()
             UserDefaults.standard.set(lastChecked, forKey: "update.lastChecked")
-            state = Self.isNewer(remote, thanVersion: currentVersion, build: currentBuild) ? .available(remote) : .upToDate
+            // This fork's build numbers come from its own CI and don't line up with the original's,
+            // so only the version says whether the original is ahead (time to sync the fork).
+            state = remote.version.compare(currentVersion, options: .numeric) == .orderedDescending ? .available(remote) : .upToDate
         } catch is DecodingError {
             state = .failed("Couldn't read the version info.")
         } catch {

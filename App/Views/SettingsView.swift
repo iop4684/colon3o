@@ -432,6 +432,7 @@ struct SpotifySettings: View {
 struct SoftwareUpdateSettings: View {
     var body: some View {
         Form {
+            ForkBuildSection()
             SoftwareUpdateSection()
         }
         .navigationTitle("Software Update")
@@ -510,6 +511,78 @@ struct LastFMSection: View {
     }
 }
 
+/// This fork's own builds, from its GitHub Actions runs.
+struct ForkBuildSection: View {
+    @StateObject private var fork = ForkBuildChecker()
+
+    var body: some View {
+        Section {
+            LabeledContent("Installed Build", value: "\(fork.currentBuild)")
+            status
+            Button {
+                Task { await fork.check() }
+            } label: {
+                Label("Check Now", systemImage: "arrow.clockwise")
+            }
+            .disabled(fork.state == .checking)
+            Link(destination: ForkBuildChecker.repositoryURL) {
+                Label("Open colon30 on GitHub", systemImage: "arrow.up.forward.square")
+            }
+        } header: {
+            Text("This Fork")
+        } footer: {
+            Text("Follows the newest successful build of colon30's \(fork.branch) branch. Get Build opens its run on GitHub; the IPA is under Artifacts (sign in to GitHub to download), ready for SideStore or any signer.")
+        }
+        .task { await fork.check() }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        switch fork.state {
+        case .idle:
+            EmptyView()
+        case .checking:
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Checking…").foregroundStyle(.secondary)
+            }
+        case let .upToDate(build):
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Up to date", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Text(details(build)).font(.caption).foregroundStyle(.secondary)
+            }
+        case let .available(build):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("New build available", systemImage: "arrow.down.app.fill")
+                    .font(.headline)
+                    .foregroundStyle(.tint)
+                Text(details(build)).font(.subheadline).foregroundStyle(.secondary)
+                if !build.message.isEmpty {
+                    Text(build.message).font(.footnote)
+                }
+            }
+            .padding(.vertical, 4)
+            Button {
+                fork.open(build)
+            } label: {
+                Text("Get Build on GitHub")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .listRowSeparator(.hidden)
+        case let .failed(message):
+            Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+        }
+    }
+
+    private func details(_ build: ForkBuildChecker.Build) -> String {
+        var parts = ["Build \(build.runNumber)"]
+        if let date = build.date { parts.append(date.formatted(date: .abbreviated, time: .shortened)) }
+        return parts.joined(separator: " · ")
+    }
+}
+
 struct SoftwareUpdateSection: View {
     @EnvironmentObject private var updates: UpdateChecker
     @State private var showNotes = false
@@ -530,9 +603,9 @@ struct SoftwareUpdateSection: View {
             .disabled(updates.state == .checking)
             Toggle("Check Automatically", isOn: $updates.automatic)
         } header: {
-            Text("Software Update")
+            Text("Original colon3")
         } footer: {
-            Text("Beta follows the beta branch, Stable follows main. Get Update opens \(updates.channel == .stable ? "the latest release" : "the releases list") on GitHub, with the IPA for SideStore or any signer; Install from Install Page uses \(updates.source). Installing keeps your music and settings.")
+            Text("Follows AmineWallah/colon3 (Beta follows its beta branch, Stable its main). A newer version there means it's time to sync this fork; View on GitHub opens \(updates.channel == .stable ? "its latest release" : "its releases list").")
         }
     }
 
@@ -548,7 +621,7 @@ struct SoftwareUpdateSection: View {
             }
         case .upToDate:
             VStack(alignment: .leading, spacing: 2) {
-                Label("colon3 is up to date", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Label("Same version as the original", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 if let checked = updates.lastChecked {
                     Text("Checked \(checked.formatted(.relative(presentation: .named)))")
                         .font(.caption)
@@ -557,7 +630,7 @@ struct SoftwareUpdateSection: View {
             }
         case let .available(remote):
             VStack(alignment: .leading, spacing: 6) {
-                Label("Update available", systemImage: "arrow.down.app.fill")
+                Label("Original has a newer version", systemImage: "arrow.triangle.2.circlepath")
                     .font(.headline)
                     .foregroundStyle(.tint)
                 Text(details(remote))
@@ -573,16 +646,7 @@ struct SoftwareUpdateSection: View {
                 }
             }
             .padding(.vertical, 4)
-            Button {
-                updates.openReleases()
-            } label: {
-                Text("Get Update on GitHub")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .listRowSeparator(.hidden)
-            Button("Install from Install Page") { updates.install(remote) }
+            Button("View on GitHub") { updates.openReleases() }
         case let .failed(message):
             Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
         }
