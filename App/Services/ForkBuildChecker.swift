@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-/// Tracks this fork's own builds (iop4684/colon30). The fork has no signed install page, so it
+/// Tracks this fork's own builds (iop4684/colon3o). The fork has no signed install page, so it
 /// asks GitHub for the newest successful CI run on this build's branch instead. CI stamps each
 /// build with its run number (CFBundleVersion), so a higher run number means a newer build.
 @MainActor
@@ -22,7 +22,7 @@ final class ForkBuildChecker: ObservableObject {
     }
 
     nonisolated static let owner = "iop4684"
-    nonisolated static let repo = "colon30"
+    nonisolated static let repo = "colon3o"
     nonisolated static let repositoryURL = URL(string: "https://github.com/\(owner)/\(repo)")!
 
     @Published private(set) var state: State = .idle

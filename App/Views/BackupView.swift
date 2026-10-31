@@ -13,7 +13,7 @@ struct BackupView: View {
 
     var body: some View {
         Form {
-            driveSection
+            // Google Drive is hidden in this fork; backups go to a file.
             if drive.isConnected {
                 backUpSection
                 restoreSection

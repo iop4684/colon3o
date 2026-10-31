@@ -56,7 +56,7 @@ struct WiFiTransferView: View {
                     Text("colon3's Music folder is also shared over a cable:")
                     Text("• Mac: Finder › iPhone › Files › colon3\n• Windows: Apple Devices app › Files\n• Linux: libimobiledevice + ifuse")
                         .foregroundStyle(.secondary)
-                    Text("ifuse --documents com.iop4684.colon30 ~/iphone")
+                    Text("ifuse --documents com.iop4684.colon3o ~/iphone")
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                         .padding(8)

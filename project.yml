@@ -23,7 +23,7 @@ targets:
     info:
       path: Support/Info.plist
       properties:
-        CFBundleDisplayName: colon30
+        CFBundleDisplayName: colon3o
         # Filled from MARKETING_VERSION / CURRENT_PROJECT_VERSION below; CI overrides both.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
@@ -48,7 +48,7 @@ targets:
         NSAppleMusicUsageDescription: "colon3 reads your Music library's playlists so it can rebuild them from your own music and Soulseek."
         # colon3://player, colon3://downloads, … from the Dynamic Island, Shortcuts and Back Tap.
         CFBundleURLTypes:
-          - CFBundleURLName: com.iop4684.colon30
+          - CFBundleURLName: com.iop4684.colon3o
             CFBundleURLSchemes: [colon3]
         # Lets Files and other apps "Open in" / "Copy to" colon3.
         CFBundleDocumentTypes:
@@ -65,7 +65,7 @@ targets:
               - public.aifc-audio
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.iop4684.colon30
+        PRODUCT_BUNDLE_IDENTIFIER: com.iop4684.colon3o
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "1.3.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -89,14 +89,14 @@ targets:
     info:
       path: Support/Widget-Info.plist
       properties:
-        CFBundleDisplayName: colon30 Transfers
+        CFBundleDisplayName: colon3o Transfers
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.iop4684.colon30.TransfersWidget
+        PRODUCT_BUNDLE_IDENTIFIER: com.iop4684.colon3o.TransfersWidget
         MARKETING_VERSION: "1.3.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"

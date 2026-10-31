@@ -99,9 +99,9 @@ struct SettingsView: View {
         return false
     }
 
-    private var backupStatus: String {
+    private var backupStatus: String? {
         if backup.isWorking { return "Working\u{2026}" }
-        guard drive.isConnected else { return backup.pending.songs.isEmpty ? "Off" : "\(backup.pending.songs.count) missing" }
+        guard drive.isConnected else { return backup.pending.songs.isEmpty ? nil : "\(backup.pending.songs.count) missing" }
         return backup.lastBackup.map { $0.formatted(.relative(presentation: .named)) } ?? "Not Yet"
     }
 }
@@ -526,12 +526,12 @@ struct ForkBuildSection: View {
             }
             .disabled(fork.state == .checking)
             Link(destination: ForkBuildChecker.repositoryURL) {
-                Label("Open colon30 on GitHub", systemImage: "arrow.up.forward.square")
+                Label("Open colon3o on GitHub", systemImage: "arrow.up.forward.square")
             }
         } header: {
             Text("This Fork")
         } footer: {
-            Text("Follows the newest successful build of colon30's \(fork.branch) branch. Get Build opens its run on GitHub; the IPA is under Artifacts (sign in to GitHub to download), ready for SideStore or any signer.")
+            Text("Follows the newest successful build of colon3o's \(fork.branch) branch. Get Build opens its run on GitHub; the IPA is under Artifacts (sign in to GitHub to download), ready for SideStore or any signer.")
         }
         .task { await fork.check() }
     }
