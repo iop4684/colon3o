@@ -254,14 +254,10 @@ struct PlaybackSettings: View {
         Form {
             Section {
                 Toggle("Autoplay", isOn: $player.autoplay)
-                Toggle("Autoplay Only from Library", isOn: $player.autoplayLibraryOnly)
-                    .disabled(!player.autoplay)
-                Toggle("Download Suggestions Automatically", isOn: $player.autoplayAutoDownload)
-                    .disabled(!player.autoplay || player.autoplayLibraryOnly)
             } header: {
                 Text("Autoplay")
             } footer: {
-                Text("Autoplay keeps the music going when the queue ends. With a Last.fm API key (Settings › Last.fm) it picks songs similar to what you played: ones in your library play straight away; ones you don't have show under Up Next with a Download button, and play once downloaded (into the \u{201C}Found by Autoplay\u{201D} playlist). Turn on Download Suggestions Automatically to skip the button, or Only from Library to never suggest downloads. Recently played songs are skipped.")
+                Text("Autoplay keeps the music going from your library when the queue ends. With a Last.fm API key (Settings › Last.fm) it favours songs similar to what you played. Recently played songs are skipped.")
             }
 
             Section {
@@ -290,13 +286,6 @@ struct AppearanceSettings: View {
         Form {
             Section("Accent Colour") {
                 AccentPicker()
-            }
-            Section {
-                NavigationLink("Home Sections") { HomeSectionsSettings() }
-            } header: {
-                Text("Home")
-            } footer: {
-                Text("Reorder or hide the shelves on the Home tab.")
             }
         }
         .navigationTitle("Appearance")

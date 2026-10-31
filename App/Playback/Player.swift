@@ -158,7 +158,8 @@ final class Player: ObservableObject {
         let savedRate = UserDefaults.standard.object(forKey: "playback.rate") as? Float ?? 1
         playbackRate = min(max(savedRate, Self.rateRange.lowerBound), Self.rateRange.upperBound)
         autoplay = AppSettings.flag(AppSettings.autoplayKey)
-        autoplayLibraryOnly = UserDefaults.standard.bool(forKey: AppSettings.autoplayLibraryOnlyKey)
+        // This fork never suggests downloads: autoplay only picks songs already in the library.
+        autoplayLibraryOnly = true
         autoplayAutoDownload = UserDefaults.standard.bool(forKey: AppSettings.autoplayAutoDownloadKey)
         recentlyPlayed = UserDefaults.standard.stringArray(forKey: "autoplay.recent") ?? []
         engine.bitPerfect = bitPerfect
