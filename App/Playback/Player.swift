@@ -155,8 +155,8 @@ final class Player: ObservableObject {
         engine = EngineBackend()
         avPlayer = AVPlayerBackend()
         bitPerfect = UserDefaults.standard.bool(forKey: AppSettings.bitPerfectKey)
-        let savedRate = UserDefaults.standard.object(forKey: "playback.rate") as? Float ?? 1
-        playbackRate = min(max(savedRate, Self.rateRange.lowerBound), Self.rateRange.upperBound)
+        // This fork has no speed control, so always play at normal speed.
+        playbackRate = 1
         autoplay = AppSettings.flag(AppSettings.autoplayKey)
         // This fork never suggests downloads: autoplay only picks songs already in the library.
         autoplayLibraryOnly = true

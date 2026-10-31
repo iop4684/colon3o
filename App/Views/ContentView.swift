@@ -27,7 +27,7 @@ struct ContentView: View {
         }
         .modifier(TabAccessoryMiniPlayer(isVisible: player.current != nil, open: openPlayer))
         .modifier(RouterPresenters(active: !router.showPlayer))
-        .sheet(isPresented: $router.showPlayer) {
+        .fullScreenCover(isPresented: $router.showPlayer) {
             NowPlayingView()
                 .modifier(RouterPresenters(active: true))
                 .tint(Color(hex: accentHex))

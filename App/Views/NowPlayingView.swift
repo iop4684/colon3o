@@ -15,7 +15,8 @@ struct NowPlayingView: View {
     @EnvironmentObject private var router: AppRouter
     @State private var mode: Mode = .artwork
     @State private var showEqualizer = false
-    @State private var showSpeed = false
+    /// How far the player has been pulled down to close it.
+    @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,11 +46,6 @@ struct NowPlayingView: View {
                     .padding(.top, mode == .artwork ? 0 : 8)
                 transport
                     .padding(.vertical, 22)
-                if showSpeed {
-                    SpeedControl()
-                        .padding(.bottom, 14)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
                 VolumeRow()
                 bottomBar
                     .padding(.top, 22)
@@ -64,14 +60,33 @@ struct NowPlayingView: View {
         .foregroundStyle(.white)
         .background { PlayerBackground(image: player.artwork) }
         .environment(\.colorScheme, .dark)
-        .presentationDragIndicator(.hidden)
-        .presentationBackground(.black)
+        // Full screen like Apple Music; pull down anywhere outside the lyrics, queue and sliders
+        // to close it, with the app showing through behind as it moves.
+        .clipShape(.rect(cornerRadius: dragOffset > 0 ? 44 : 0))
+        .offset(y: dragOffset)
+        .gesture(dismissDrag)
+        .onDisappear { dragOffset = 0 }
+        .presentationBackground(.clear)
         .sheet(isPresented: $showEqualizer) {
             NavigationStack { EqualizerView(equalizer: player.equalizer) }
                 .presentationDetents([.medium, .large])
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: mode)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showSpeed)
+    }
+
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .onChanged { value in
+                guard value.translation.height > abs(value.translation.width) || dragOffset > 0 else { return }
+                dragOffset = max(value.translation.height, 0)
+            }
+            .onEnded { value in
+                if dragOffset > 140 || (dragOffset > 0 && value.predictedEndTranslation.height > 320) {
+                    router.showPlayer = false
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { dragOffset = 0 }
+                }
+            }
     }
 
     private var largeArtwork: some View {
@@ -210,30 +225,12 @@ struct NowPlayingView: View {
         HStack {
             modeButton(.lyrics, symbol: "quote.bubble")
             Spacer()
-            speedButton
-            Spacer()
             AirPlayButton()
                 .frame(width: 44, height: 44)
             Spacer()
             modeButton(.queue, symbol: "list.bullet")
         }
         .padding(.horizontal, 24)
-    }
-
-    private var speedButton: some View {
-        let changed = abs(player.playbackRate - 1) >= 0.001
-        return Button {
-            showSpeed.toggle()
-        } label: {
-            Text(SpeedControl.label(player.playbackRate))
-                .font(.subheadline.weight(.bold).monospacedDigit())
-                .foregroundStyle(showSpeed ? Color.black.opacity(0.75) : Color.white.opacity(changed ? 1 : 0.7))
-                .frame(minWidth: 44, minHeight: 44)
-                .padding(.horizontal, 4)
-                .background(showSpeed ? Color.white.opacity(0.8) : Color.clear, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Playback speed")
     }
 
     private func modeButton(_ target: Mode, symbol: String) -> some View {
@@ -367,10 +364,21 @@ struct VolumeRow: View {
     }
 }
 
+/// MPVolumeView puts its slider at the top of its frame; this centres it, so the track lines up
+/// with the speaker icons beside it.
+private final class CenteredVolumeView: MPVolumeView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        for case let slider as UISlider in subviews {
+            slider.center.y = bounds.midY
+        }
+    }
+}
+
 /// The system volume slider (MPVolumeView), restyled to match.
 struct SystemVolumeSlider: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
-        let view = MPVolumeView(frame: .zero)
+        let view: MPVolumeView = CenteredVolumeView(frame: .zero)
         view.tintColor = .white
         style(view)
         return view
