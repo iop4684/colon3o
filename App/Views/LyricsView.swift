@@ -88,9 +88,13 @@ struct LyricsView: View {
         isLoading = false
     }
 
+    /// PetitLyrics' timings run late: measured against Apple Music on the same song, its words
+    /// land about three quarters of a second after the singing. Other sources are used as they are.
+    private var timingLead: Double { fetchedFrom == LyricsSource.petit.rawValue ? 0.75 : 0 }
+
     private func activeLine(in lines: [LyricLine]) -> Int {
         // Lead slightly so the highlight lands as the line starts.
-        let now = position + 0.25
+        let now = position + 0.25 + timingLead
         var active = -1
         for line in lines {
             if line.time <= now { active = line.id } else { break }
@@ -138,7 +142,7 @@ struct LyricsView: View {
     @ViewBuilder
     private func lineText(_ line: LyricLine, isActive: Bool) -> some View {
         if isActive, !line.words.isEmpty {
-            WordByWordLine(line: line, position: position)
+            WordByWordLine(line: line, position: position + timingLead)
         } else {
             Text(line.text)
         }

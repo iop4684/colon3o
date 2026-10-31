@@ -278,7 +278,8 @@ struct PlayerBackground: View {
                         .saturation(1.4)
                         .transition(.opacity)
                 }
-                LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
+                // Darker than before, like Apple Music, so dimmed and lit lyrics stand apart.
+                LinearGradient(colors: [.black.opacity(0.5), .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
             }
             .clipShape(.rect(cornerRadius: cornerRadius))
         }

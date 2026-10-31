@@ -270,9 +270,17 @@ actor LyricsService {
                 lines.append((time, shown.isEmpty ? "♪" : shown, words, end))
             }
         }
-        return lines.sorted { $0.time < $1.time }.enumerated().map {
-            LyricLine(id: $0.offset, time: $0.element.time, text: $0.element.text,
-                      words: $0.element.words, wordsEnd: $0.element.end)
+        let sorted = lines.sorted { $0.time < $1.time }
+        // Empty lines (♪) only for real breaks, like Apple Music: a short gap between two sung
+        // lines doesn't get one.
+        let kept = sorted.indices.filter { index in
+            guard sorted[index].text == "♪", sorted[index].words.isEmpty else { return true }
+            let next = index + 1 < sorted.count ? sorted[index + 1].time : .infinity
+            return next - sorted[index].time >= 6
+        }
+        return kept.enumerated().map { id, index in
+            LyricLine(id: id, time: sorted[index].time, text: sorted[index].text,
+                      words: sorted[index].words, wordsEnd: sorted[index].end)
         }
     }
 
