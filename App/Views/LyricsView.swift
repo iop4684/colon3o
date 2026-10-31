@@ -105,7 +105,7 @@ struct LyricsView: View {
                 VStack(alignment: .leading, spacing: 26) {
                     ForEach(lines) { line in
                         let distance = active < 0 ? 1 : abs(line.id - active)
-                        Text(line.text)
+                        lineText(line, isActive: line.id == active)
                             .font(.system(size: 32, weight: .bold))
                             .foregroundStyle(.white.opacity(line.id == active ? 1 : 0.32))
                             .blur(radius: line.id == active ? 0 : min(Double(distance) * 0.6, 2.4))
@@ -131,6 +131,17 @@ struct LyricsView: View {
             .onAppear { proxy.scrollTo(max(active, 0), anchor: UnitPoint(x: 0, y: 0.3)) }
         }
         .mask(fade)
+    }
+
+    /// The current line fills word by word when the lyrics have word timings; every other line
+    /// (and lyrics without them) is plain text, styled as before.
+    @ViewBuilder
+    private func lineText(_ line: LyricLine, isActive: Bool) -> some View {
+        if isActive, !line.words.isEmpty {
+            WordByWordLine(line: line, position: position)
+        } else {
+            Text(line.text)
+        }
     }
 
     private func plain(_ lines: [String]) -> some View {
@@ -165,5 +176,43 @@ struct LyricsView: View {
             .init(color: .black, location: 0.85),
             .init(color: .clear, location: 1),
         ], startPoint: .top, endPoint: .bottom)
+    }
+}
+
+/// One line lighting up word by word. The playback position arrives about five times a second,
+/// so between updates it's carried forward on the clock (at most a quarter second, so a pause
+/// doesn't run ahead) to keep the fill smooth.
+private struct WordByWordLine: View {
+    let line: LyricLine
+    let position: Double
+
+    private struct Anchor {
+        var position: Double
+        var at: Date
+    }
+
+    @State private var anchor = Anchor(position: 0, at: .distantPast)
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+            let elapsed = min(max(context.date.timeIntervalSince(anchor.at), 0), 0.25)
+            text(at: anchor.position + elapsed)
+        }
+        .onAppear { anchor = Anchor(position: position, at: Date()) }
+        .onChange(of: position) { _, newValue in anchor = Anchor(position: newValue, at: Date()) }
+    }
+
+    /// Each word brightens from the dimmed level to full over the time until the next word.
+    private func text(at now: Double) -> Text {
+        let words = line.words
+        var result = Text("")
+        for index in words.indices {
+            let word = words[index]
+            let end = index + 1 < words.count ? words[index + 1].time : (line.wordsEnd ?? word.time + 0.6)
+            let span = max(end - word.time, 0.05)
+            let progress = min(max((now - word.time) / span, 0), 1)
+            result = result + Text(word.text).foregroundStyle(Color.white.opacity(0.32 + 0.68 * progress))
+        }
+        return result
     }
 }

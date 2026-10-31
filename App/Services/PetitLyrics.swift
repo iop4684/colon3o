@@ -51,25 +51,27 @@ enum PetitLyrics {
     /// `<wsy><line><linestring>…</linestring><word><wordstring>…</wordstring><starttime>ms</starttime>…`
     private static func wordSynced(_ data: Data) -> Result? {
         guard let root = XMLTree.parse(data) else { return nil }
-        var lines: [LyricLine] = []
         var lrc: [String] = []
         for line in root.all("line") {
             let text = line.child("linestring")?.value ?? ""
             let words = line.children.filter { $0.name == "word" }
             let starts = words.compactMap { $0.child("starttime").flatMap { Int($0.value) } }
             guard let first = starts.first, first >= 0 else { continue }
-            lines.append(LyricLine(id: lines.count, time: Double(first) / 1000, text: text.isEmpty ? "♪" : text))
 
             // Word timings only when every word has its text and they add up to the line.
             let pieces = words.map { ($0.child("wordstring")?.rawText ?? "", $0.child("starttime").flatMap { Int($0.value) }) }
-            if pieces.count > 1, pieces.allSatisfy({ $0.1 != nil }), pieces.map(\.0).joined() == text {
+            if pieces.count > 1, pieces.allSatisfy({ $0.1 != nil }),
+               pieces.map(\.0).joined().trimmingCharacters(in: .whitespaces) == text {
                 lrc.append("[\(stamp(first))]" + pieces.map { "<\(stamp($0.1!))>\($0.0)" }.joined())
             } else {
                 lrc.append("[\(stamp(first))]\(text)")
             }
         }
+        // Read back through the .lrc parser, so these show exactly like the saved file will.
+        let text = lrc.joined(separator: "\n")
+        let lines = LyricsService.parseLRC(text)
         guard !lines.isEmpty else { return nil }
-        return Result(lyrics: .synced(lines), lrc: lrc.joined(separator: "\n"))
+        return Result(lyrics: .synced(lines), lrc: text)
     }
 
     private static func request(_ fields: [String: String]) async throws -> [XMLTree.Node] {

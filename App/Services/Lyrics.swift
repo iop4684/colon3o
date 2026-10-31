@@ -5,6 +5,16 @@ struct LyricLine: Identifiable, Hashable {
     let id: Int
     let time: Double
     let text: String
+    /// Word timings (enhanced LRC), when the lyrics have them; empty for line-synced lyrics.
+    var words: [LyricWord] = []
+    /// When the last word ends, if the lyrics say so.
+    var wordsEnd: Double? = nil
+}
+
+/// One timed piece of a line: a word or syllable, with any spaces that follow it.
+struct LyricWord: Hashable {
+    let time: Double
+    let text: String
 }
 
 enum Lyrics: Equatable {
@@ -192,30 +202,74 @@ actor LyricsService {
         return entry.instrumental == true ? .instrumental : .notFound
     }
 
-    /// "[01:23.45] text" lines; a line may carry several timestamps.
-    private static let wordTag = try! NSRegularExpression(pattern: #"<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>"#)
+    private static let wordTag = try! NSRegularExpression(pattern: #"<(\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?)>"#)
 
+    /// "[01:23.45] text" lines; a line may carry several timestamps. Enhanced LRC word timings
+    /// ("[01:23.45] <01:23.45>some <01:23.90>words") become the line's `words`.
     static func parseLRC(_ text: String) -> [LyricLine] {
         let regex = try! NSRegularExpression(pattern: #"\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]"#)
-        var lines: [(Double, String)] = []
+        var lines: [(time: Double, text: String, words: [LyricWord], end: Double?)] = []
         for raw in text.components(separatedBy: .newlines) {
             let range = NSRange(raw.startIndex..., in: raw)
             let matches = regex.matches(in: raw, range: range)
             guard let last = matches.last, let textRange = Range(NSRange(location: last.range.upperBound,
                                                                          length: range.upperBound - last.range.upperBound), in: raw)
             else { continue }
-            // Enhanced LRC word timings (<mm:ss.xx>) aren't shown yet; keep the words.
-            let words = wordTag.stringByReplacingMatches(in: String(raw[textRange]), range: NSRange(location: 0, length: raw[textRange].utf16.count),
-                                                          withTemplate: "")
+            let rest = String(raw[textRange])
+            let shown = wordTag.stringByReplacingMatches(in: rest, range: NSRange(rest.startIndex..., in: rest), withTemplate: "")
                 .trimmingCharacters(in: .whitespaces)
             for match in matches {
                 guard let minutes = Range(match.range(at: 1), in: raw).flatMap({ Double(raw[$0]) }),
                       let secondsText = Range(match.range(at: 2), in: raw).map({ raw[$0].replacingOccurrences(of: ":", with: ".") }),
                       let seconds = Double(secondsText) else { continue }
-                lines.append((minutes * 60 + seconds, words.isEmpty ? "♪" : words))
+                let time = minutes * 60 + seconds
+                // Word times are absolute, so they only fit a line that appears once.
+                let (words, end): ([LyricWord], Double?) = matches.count == 1 ? wordTimings(in: rest, lineTime: time) : ([], nil)
+                lines.append((time, shown.isEmpty ? "♪" : shown, words, end))
             }
         }
-        return lines.sorted { $0.0 < $1.0 }.enumerated().map { LyricLine(id: $0.offset, time: $0.element.0, text: $0.element.1) }
+        return lines.sorted { $0.time < $1.time }.enumerated().map {
+            LyricLine(id: $0.offset, time: $0.element.time, text: $0.element.text,
+                      words: $0.element.words, wordsEnd: $0.element.end)
+        }
+    }
+
+    /// The words of an enhanced LRC line, each starting at its <mm:ss.xx> tag. A tag with nothing
+    /// after it marks where the last word ends.
+    private static func wordTimings(in rest: String, lineTime: Double) -> ([LyricWord], Double?) {
+        let tags = wordTag.matches(in: rest, range: NSRange(rest.startIndex..., in: rest))
+        guard !tags.isEmpty, let first = Range(tags[0].range, in: rest) else { return ([], nil) }
+        var words: [LyricWord] = []
+        var end: Double?
+        let lead = String(rest[..<first.lowerBound])
+        if !lead.trimmingCharacters(in: .whitespaces).isEmpty { words.append(LyricWord(time: lineTime, text: lead)) }
+        for (index, tag) in tags.enumerated() {
+            guard let tagRange = Range(tag.range, in: rest), let stampRange = Range(tag.range(at: 1), in: rest),
+                  let time = seconds(String(rest[stampRange])) else { continue }
+            let next = index + 1 < tags.count ? Range(tags[index + 1].range, in: rest)?.lowerBound ?? rest.endIndex : rest.endIndex
+            let piece = String(rest[tagRange.upperBound..<next])
+            if piece.trimmingCharacters(in: .whitespaces).isEmpty {
+                if index == tags.count - 1 { end = time }
+            } else {
+                words.append(LyricWord(time: time, text: piece))
+            }
+        }
+        guard !words.isEmpty else { return ([], nil) }
+        // Same spacing as the line text: no leading or trailing spaces on the line as a whole.
+        words[0] = LyricWord(time: words[0].time, text: String(words[0].text.drop(while: { $0 == " " })))
+        let lastIndex = words.count - 1
+        var tail = words[lastIndex].text
+        while tail.hasSuffix(" ") { tail.removeLast() }
+        words[lastIndex] = LyricWord(time: words[lastIndex].time, text: tail)
+        return (words, end)
+    }
+
+    /// "mm:ss.xx" (or "mm:ss:xx") in seconds.
+    private static func seconds(_ stamp: String) -> Double? {
+        let parts = stamp.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2, let minutes = Double(parts[0]),
+              let seconds = Double(parts[1].replacingOccurrences(of: ":", with: ".")) else { return nil }
+        return minutes * 60 + seconds
     }
 }
 
