@@ -325,11 +325,11 @@ private struct WordByWordLine: View {
             let now = estimate(at: context.date)
             VStack(alignment: .leading, spacing: 4) {
                 words.font(LyricsFont.line)
-                    .textRenderer(WordSweepRenderer(now: now, isActive: isActive))
+                    .textRenderer(WordSweepRenderer(now: now, isActive: isActive, rise: riseSpan))
                 if let romaji {
                     romajiText(romaji)
                         .font(LyricsFont.romaji)
-                        .textRenderer(WordSweepRenderer(now: now, isActive: isActive))
+                        .textRenderer(WordSweepRenderer(now: now, isActive: isActive, rise: riseSpan))
                 }
             }
         }
@@ -359,6 +359,14 @@ private struct WordByWordLine: View {
         let next = index + 1 < words.count ? words[index + 1].time : word.time + 1
         let end = knownEnd ?? min(next, word.time + 1)
         return (word.time, max(end, word.time + 0.05), knownEnd != nil)
+    }
+
+    /// The time the gentle rise travels across the line: from the first word to the last, at an
+    /// even pace whatever the singing does, so the lyrics and the romaji lift together.
+    private var riseSpan: ClosedRange<Double> {
+        guard !line.words.isEmpty else { return line.time...line.time + 1 }
+        let start = timing(0).start
+        return start...max(timing(line.words.count - 1).end, start + 0.5)
     }
 
     /// When the character at this point of the line (UTF-16 offset) is sung: its word's time,
@@ -428,22 +436,30 @@ private struct WordSweep: TextAttribute {
 private struct WordSweepRenderer: TextRenderer {
     let now: Double
     var isActive = true
+    /// When the rise starts at the line's first character and reaches its last.
+    var rise: ClosedRange<Double> = 0...1
 
     /// Unsung words on the current line: dimmed, but less than other lines (as in Apple Music),
     /// so the line reads as current straight away.
     static let dimmed = 0.65
     /// How far sung text has risen, in points.
-    static let lift: CGFloat = 2
+    static let lift: CGFloat = 2.5
     /// How long a character takes to rise once the sweep reaches it, in seconds.
-    static let rise = 0.5
+    static let riseDuration = 1.1
 
     /// Room for the glow and swell to draw past the text's edges.
     var displayPadding: EdgeInsets { EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16) }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        // The rise moves through the text in reading order at an even pace, measured by width,
+        // so every character lifts the same way and neighbours overlap smoothly.
+        var totalWidth: CGFloat = 0
+        for line in layout { for run in line { for slice in run { totalWidth += slice.typographicBounds.width } } }
+        var passed: CGFloat = 0
         for line in layout {
             for run in line {
                 guard isActive, let sweep = run[WordSweep.self] else {
+                    for slice in run { passed += slice.typographicBounds.width }
                     context.draw(run)
                     continue
                 }
@@ -453,7 +469,7 @@ private struct WordSweepRenderer: TextRenderer {
 
                 var word = context
                 if emphasis > 0 {
-                    let scale = 1 + 0.05 * emphasis
+                    let scale = 1 + 0.03 * emphasis
                     word.translateBy(x: bounds.midX, y: bounds.midY)
                     word.scaleBy(x: scale, y: scale)
                     word.translateBy(x: -bounds.midX, y: -bounds.midY)
@@ -466,10 +482,11 @@ private struct WordSweepRenderer: TextRenderer {
                 for slice in run {
                     let glyph = slice.typographicBounds.rect
                     // When the sweep reaches this character, and how far it has risen since.
-                    let share = bounds.width > 0 ? (glyph.midX - bounds.minX) / bounds.width : 0
-                    let reached = sweep.start + Double(share) * sweep.span
-                    let t = min(max((now - reached) / Self.rise, 0), 1)
-                    let risen = 1 - pow(1 - t, 3)
+                    let share = totalWidth > 0 ? Double((passed + glyph.width / 2) / totalWidth) : 0
+                    passed += glyph.width
+                    let reached = rise.lowerBound + share * (rise.upperBound - rise.lowerBound)
+                    let t = min(max((now - reached) / Self.riseDuration + 0.5, 0), 1)
+                    let risen = 0.5 - 0.5 * cos(.pi * t)
 
                     var character = word
                     character.translateBy(x: 0, y: -Self.lift * CGFloat(risen))
