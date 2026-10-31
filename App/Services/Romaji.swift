@@ -16,6 +16,7 @@ enum Romaji {
 
         // Each word's reading in hiragana, and whether it stands on its own in romaji.
         var words: [(kana: String, attaches: Bool)] = []
+        var previousToken: String?
         while !CFStringTokenizerAdvanceToNextToken(tokenizer).isEmpty {
             let tokenRange = CFStringTokenizerGetCurrentTokenRange(tokenizer)
             let token = (CFStringCreateWithSubstring(nil, string, tokenRange) as String?) ?? ""
@@ -26,8 +27,21 @@ enum Romaji {
             // Apple Music's "kidzuiteru"; particles and interjections stand on their own. So does
             // anything after a word ending in っ (言っ + て → itte).
             let previousEndsInSokuon = words.last?.kana.hasSuffix("っ") ?? false
-            let attaches = !words.isEmpty && (previousEndsInSokuon || (isHiragana(token) && !standalone.contains(token)))
-            words.append((kana, attaches))
+            // Nothing joins onto a particle (君が + いった is "kimi ga itta", not "gaitta").
+            let previousStandsAlone = previousToken.map { standalone.contains($0) } ?? true
+            let attaches: Bool
+            if words.isEmpty {
+                attaches = false
+            } else if suffixes.contains(token) || token == "ん" {
+                // 盲目 + 的 → moumokuteki; な + ん → nan.
+                attaches = true
+            } else if startsWord.contains(token) {
+                attaches = false
+            } else {
+                attaches = !previousStandsAlone && (previousEndsInSokuon || (isHiragana(token) && !standalone.contains(token)))
+            }
+            words.append((readings[token] ?? kana, attaches))
+            previousToken = token
         }
 
         var groups: [String] = []
@@ -53,7 +67,8 @@ enum Romaji {
         // The tokenizer marks long vowels and っ with accents and "~" (mōmoku, i~): spell long
         // vowels out and drop the marks before turning the reading back into kana.
         let cleaned = latin.map { reading in
-            var text = reading.lowercased()
+            // "~tsu" is how the reading marks a small っ (いっ → "i~tsu"); the っ is kept from the word itself.
+            var text = reading.lowercased().replacingOccurrences(of: "~tsu", with: "")
             for (long, plain) in [("ō", "ou"), ("ū", "uu"), ("ā", "aa"), ("ē", "ee"), ("ī", "ii"),
                                   ("ô", "ou"), ("û", "uu"), ("â", "aa"), ("ê", "ee"), ("î", "ii")] {
                 text = text.replacingOccurrences(of: long, with: plain)
@@ -70,12 +85,22 @@ enum Romaji {
         return token
     }
 
+    /// Words whose usual reading in songs differs from the dictionary's first choice.
+    private static let readings = ["私": "わたし", "僕": "ぼく", "貴方": "あなた", "今日": "きょう", "明日": "あした",
+                                   "一人": "ひとり", "二人": "ふたり", "大人": "おとな", "何": "なに", "日": "ひ"]
+
+    /// Kanji and kana suffixes written together with the word before them.
+    private static let suffixes: Set<String> = ["的", "さん", "ちゃん", "くん", "様", "達", "たち", "性", "感"]
+
+    /// Kana words that start a new word but can take endings themselves (だっ + た → datta).
+    private static let startsWord: Set<String> = ["だっ", "じゃ", "です", "でし"]
+
     /// Particles read differently from how they're written.
     private static let particles = ["は": "wa", "へ": "e", "を": "wo"]
 
     /// Hiragana words that stand apart in romaji rather than joining the word before them.
     private static let standalone: Set<String> = ["は", "が", "を", "に", "で", "と", "の", "へ", "も", "や", "か",
-                                                  "ね", "よ", "な", "わ", "ぞ", "さ", "から", "まで", "より", "けど",
+                                                  "ね", "よ", "な", "わ", "ぞ", "さ", "から", "まで", "より", "けど", "こと", "もの", "とき", "ため", "よう",
                                                   "ほら", "あの", "その", "この", "あまり"]
 
     // MARK: Spelling

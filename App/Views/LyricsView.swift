@@ -15,7 +15,11 @@ struct LyricsView: View {
     @State private var checking: [LyricsSource] = []
     /// Where the lyrics on screen were fetched from (nil for files you added).
     @State private var fetchedFrom: String?
-    @State private var userScrolledAt: Date?
+    /// Where each line sits in the lyrics column (before scrolling), to bring the current one into place.
+    @State private var lineFrames: [Int: CGRect] = [:]
+    /// How far you've scrolled the lyrics yourself; eases back to 0 after you stop.
+    @State private var dragOffset: CGFloat = 0
+    @State private var dragStart: CGFloat?
     /// While you scroll the lyrics yourself, every line is sharp (no blur), like Apple Music.
     @State private var browsing = false
     @State private var browseEnd: Task<Void, Never>?
@@ -125,48 +129,83 @@ struct LyricsView: View {
         return active
     }
 
+    /// The lyrics column moves to keep the current line about a third of the way down. Like Apple
+    /// Music, each line glides there on its own soft spring, the ones further down setting off a
+    /// little later, so the column flows rather than jumping as one block.
     private func synced(_ lines: [LyricLine]) -> some View {
         let active = activeLine(in: lines)
-        return ScrollViewReader { proxy in
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 26) {
-                    ForEach(lines) { line in
-                        let distance = active < 0 ? 1 : abs(line.id - active)
-                        let next = line.id + 1 < lines.count ? lines[line.id + 1].time : nil
-                        lineBlock(line, isActive: line.id == active, next: next)
-                            .foregroundStyle(.white.opacity(line.id == active ? 1 : 0.32))
-                            .blur(radius: line.id == active || browsing ? 0 : min(Double(distance) * 0.6, 2.4))
-                            .scaleEffect(line.id == active ? 1 : 0.97, anchor: .leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                            .id(line.id)
-                            .onTapGesture { onSeek(line.time) }
-                    }
+        return GeometryReader { geometry in
+            let target = scrollTarget(active: active, height: geometry.size.height)
+            VStack(alignment: .leading, spacing: 26) {
+                ForEach(lines) { line in
+                    let isActive = line.id == active
+                    let distance = active < 0 ? 1 : abs(line.id - active)
+                    let next = line.id + 1 < lines.count ? lines[line.id + 1].time : nil
+                    lineBlock(line, isActive: isActive, next: next)
+                        .transition(.opacity)
+                        .foregroundStyle(.white.opacity(isActive ? 1 : 0.32))
+                        .blur(radius: isActive || browsing ? 0 : min(Double(distance) * 0.6, 2.4))
+                        .scaleEffect(isActive ? 1 : 0.97, anchor: .leading)
+                        .animation(.easeInOut(duration: 0.6), value: active)
+                        .animation(.easeOut(duration: 0.3), value: browsing)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("lyricsColumn")) } action: { frame in
+                            lineFrames[line.id] = frame
+                        }
+                        .offset(y: target + dragOffset)
+                        .animation(.spring(response: 0.8, dampingFraction: 0.86).delay(stagger(line.id, active: active)),
+                                   value: target)
+                        .onTapGesture { onSeek(line.time) }
                 }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 140)
-                .animation(.easeOut(duration: 0.35), value: active)
             }
-            .simultaneousGesture(DragGesture().onChanged { _ in
-                userScrolledAt = Date()
+            .coordinateSpace(.named("lyricsColumn"))
+            .padding(.horizontal, 28)
+            .frame(width: geometry.size.width, alignment: .topLeading)
+            .onChange(of: active) { oldValue, newValue in
+                // While you're reading elsewhere, keep your place instead of jumping to the new line.
+                guard browsing else { return }
+                let height = geometry.size.height
+                dragOffset -= scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
+            }
+        }
+        .clipped()
+        .contentShape(Rectangle())
+        .gesture(browseDrag)
+        .mask(fade)
+    }
+
+    private func scrollTarget(active: Int, height: CGFloat) -> CGFloat {
+        height * 0.3 - (lineFrames[max(active, 0)]?.minY ?? 0)
+    }
+
+    /// Lines below the current one set off a little after it, up to a quarter second.
+    private func stagger(_ id: Int, active: Int) -> Double {
+        min(Double(max(id - max(active, 0), 0)) * 0.045, 0.25)
+    }
+
+    private var browseDrag: some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                if dragStart == nil { dragStart = dragOffset }
+                dragOffset = (dragStart ?? 0) + value.translation.height
                 if !browsing { withAnimation(.easeOut(duration: 0.25)) { browsing = true } }
+                browseEnd?.cancel()
+            }
+            .onEnded { value in
+                dragStart = nil
+                let fling = (value.predictedEndTranslation.height - value.translation.height) * 0.6
+                withAnimation(.spring(response: 0.6, dampingFraction: 0.9)) { dragOffset += fling }
                 browseEnd?.cancel()
                 browseEnd = Task {
                     try? await Task.sleep(for: .seconds(3))
                     guard !Task.isCancelled else { return }
-                    withAnimation(.easeInOut(duration: 0.6)) { browsing = false }
-                }
-            })
-            .onChange(of: active) { _, newValue in
-                // Don't yank the view while the user is reading ahead.
-                if let userScrolledAt, Date().timeIntervalSince(userScrolledAt) < 4 { return }
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.9)) {
-                    proxy.scrollTo(max(newValue, 0), anchor: UnitPoint(x: 0, y: 0.3))
+                    withAnimation(.spring(response: 0.9, dampingFraction: 0.88)) {
+                        dragOffset = 0
+                        browsing = false
+                    }
                 }
             }
-            .onAppear { proxy.scrollTo(max(active, 0), anchor: UnitPoint(x: 0, y: 0.3)) }
-        }
-        .mask(fade)
     }
 
     /// The current line fills word by word when the lyrics have word timings; every other line
