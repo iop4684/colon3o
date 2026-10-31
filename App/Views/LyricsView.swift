@@ -16,16 +16,14 @@ struct LyricsView: View {
     /// Where the lyrics on screen were fetched from (nil for files you added).
     @State private var fetchedFrom: String?
     /// Where each line sits in the lyrics column (before scrolling), to bring the current one into place.
-    /// Each line's height. Positions are worked out from these rather than measured on screen,
-    /// because an on-screen measurement includes the scrolling itself and would feed back into it.
-    @State private var lineHeights: [Int: CGFloat] = [:]
-    /// How far you've scrolled the lyrics yourself; eases back to 0 after you stop.
-    @State private var dragOffset: CGFloat = 0
-    @State private var dragStart: CGFloat?
-    /// How far the finger had already moved when the drag was recognised (so the column follows
-    /// from there instead of jumping by that amount).
-    @State private var dragOrigin: CGFloat = 0
-    /// While you scroll the lyrics yourself, every line is sharp (no blur), like Apple Music.
+    /// The lyrics' scroll position, moved to the current line and by your finger.
+    @State private var scroll = ScrollPosition(idType: Int.self)
+    /// Set while you're scrolling the lyrics yourself (until they return to the current line).
+    @State private var userScrolling = false
+    /// Where a hand scroll started, to tell a real scroll from a light touch.
+    @State private var scrollStart: CGFloat = 0
+    /// The current line, kept for the return to it after you've scrolled away.
+    @State private var currentLine = -1
     @State private var browsing = false
     @State private var browseEnd: Task<Void, Never>?
     /// Romaji for Japanese lines, by line id (synced) or line number (plain).
@@ -142,102 +140,80 @@ struct LyricsView: View {
     /// The lyrics column moves to keep the current line about a third of the way down. Like Apple
     /// Music, each line glides there on its own soft spring, the ones further down setting off a
     /// little later, so the column flows rather than jumping as one block.
+    /// The lyrics scroll in an ordinary iOS scroll view: your finger, momentum and the scroll
+    /// indicator are handled by iOS itself (as in Apple Music), and moving to the current line is
+    /// a smooth glide of that same scroll view. The current line sits a third of the way down;
+    /// the margins let the first and last lines get there too, and scrolling stops at them.
     private func synced(_ lines: [LyricLine]) -> some View {
         let active = activeLine(in: lines)
         return GeometryReader { geometry in
-            let target = scrollTarget(active: active, height: geometry.size.height)
-            // How far you can scroll by hand: from the first line in the current line's place to
-            // the last line there, and no further.
-            let limits = (scrollTarget(active: lines.count - 1, height: geometry.size.height) - target)...(geometry.size.height * 0.3 - target)
-            // The rows live in their own view that only depends on what they show, so a drag
-            // (which only changes dragOffset below) moves the column without touching any row.
-            LyricColumn(lines: lines,
-                        romaji: showRomaji ? romaji : [:],
-                        romajiVersion: showRomaji ? romajiVersion : -1,
-                        active: active,
-                        browsing: browsing,
-                        position: noSweep ? 0 : position + timingLead,
-                        sweeps: !noSweep,
-                        onHeight: recordHeight,
-                        onSeek: onSeek)
-                .equatable()
-                .padding(.horizontal, 28)
-                .frame(width: geometry.size.width, alignment: .topLeading)
-                // One smooth glide moves the whole column to the current line: a single moving
-                // layer, rather than every line animating on its own. No springiness, so a tap
-                // on a far line travels there and stops, without overshooting.
-                .offset(y: target)
-                .animation(Self.glide, value: target)
-                .offset(y: dragOffset)
-                .onChange(of: active) { oldValue, newValue in
-                    // While you're reading elsewhere, keep your place instead of jumping to the new line.
-                    guard browsing || dragOffset != 0 else { return }
-                    let height = geometry.size.height
-                    let shift = scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
-                    // Same glide as the column, so the two cancel out and the text stays still.
-                    withAnimation(Self.glide) { dragOffset -= shift }
+            ScrollView(.vertical) {
+                LyricColumn(lines: lines,
+                            romaji: showRomaji ? romaji : [:],
+                            romajiVersion: showRomaji ? romajiVersion : -1,
+                            active: active,
+                            browsing: browsing,
+                            position: noSweep ? 0 : position + timingLead,
+                            sweeps: !noSweep,
+                            onSeek: onSeek)
+                    .equatable()
+                    .padding(.horizontal, 28)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollPosition($scroll)
+            .contentMargins(.top, geometry.size.height * Self.anchor, for: .scrollContent)
+            .contentMargins(.bottom, geometry.size.height * (1 - Self.anchor), for: .scrollContent)
+            .background(ScrollBounceDisabler())
+            .onScrollPhaseChange { _, phase, context in
+                switch phase {
+                case .tracking, .interacting:
+                    if !userScrolling {
+                        userScrolling = true
+                        scrollStart = context.geometry.contentOffset.y
+                    }
+                    browseEnd?.cancel()
+                case .idle:
+                    guard userScrolling else { return }
+                    browseEnd?.cancel()
+                    browseEnd = Task {
+                        try? await Task.sleep(for: .seconds(3))
+                        guard !Task.isCancelled else { return }
+                        userScrolling = false
+                        withAnimation(.easeInOut(duration: 0.4)) { browsing = false }
+                        withAnimation(Self.glide) { scroll.scrollTo(id: currentLine, anchor: Self.anchorPoint) }
+                    }
+                default:
+                    break
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-                .contentShape(Rectangle())
-                .gesture(browseDrag(limits: limits))
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+                // Lines only brighten for reading once you've really scrolled, so a light touch
+                // never makes every line redraw.
+                if userScrolling, !browsing, abs(offset - scrollStart) > Self.browseDistance {
+                    withAnimation(.easeOut(duration: 0.25)) { browsing = true }
+                }
+            }
+            .onChange(of: active, initial: true) { oldValue, newValue in
+                currentLine = newValue
+                // While you're reading elsewhere, stay where you are.
+                guard !userScrolling, newValue >= 0 else { return }
+                if oldValue == newValue {
+                    scroll.scrollTo(id: newValue, anchor: Self.anchorPoint)
+                } else {
+                    withAnimation(Self.glide) { scroll.scrollTo(id: newValue, anchor: Self.anchorPoint) }
+                }
+            }
         }
-        .clipped()
         .mask(noFade ? AnyView(Color.black) : AnyView(fade))
     }
 
-    /// Remembers a line's height, ignoring sub-point changes.
-    private func recordHeight(_ id: Int, _ height: CGFloat) {
-        if let old = lineHeights[id], abs(old - height) < 0.5 { return }
-        lineHeights[id] = height
-    }
-
-    private func scrollTarget(active: Int, height: CGFloat) -> CGFloat {
-        // Top of the current line: the lines above it plus the gaps between them.
-        let index = max(active, 0)
-        let above = (0..<index).reduce(CGFloat(0)) { $0 + (lineHeights[$1] ?? 0) } + CGFloat(index) * LyricColumn.spacing
-        return height * 0.3 - above
-    }
-
-    /// How the column moves to a line: an even ease, no bounce.
+    /// The current line's place: a third of the way down.
+    static let anchor: CGFloat = 0.3
+    static let anchorPoint = UnitPoint(x: 0, y: anchor)
+    /// How the lyrics move to a line: an even ease, no bounce.
     static let glide = Animation.smooth(duration: 0.6)
     /// How far you scroll before the lines brighten for reading.
     static let browseDistance: CGFloat = 40
-
-    private func browseDrag(limits: ClosedRange<CGFloat>) -> some Gesture {
-        DragGesture(minimumDistance: 6)
-            .onChanged { value in
-                if dragStart == nil {
-                    dragStart = dragOffset
-                    dragOrigin = value.translation.height
-                }
-                let moved = value.translation.height - dragOrigin
-                // Hard stop at the first and last lines: no stretching past them.
-                dragOffset = min(max((dragStart ?? 0) + moved, limits.lowerBound), limits.upperBound)
-                // Lines only brighten for reading once you've really scrolled, so a light touch
-                // never makes every line redraw.
-                if !browsing, abs(moved) > Self.browseDistance {
-                    withAnimation(.easeOut(duration: 0.25)) { browsing = true }
-                }
-                browseEnd?.cancel()
-            }
-            .onEnded { value in
-                dragStart = nil
-                // A flick carries on a little, but always stops between the first and last line.
-                let fling = (value.predictedEndTranslation.height - value.translation.height) * 0.5
-                let resting = min(max(dragOffset + fling, limits.lowerBound), limits.upperBound)
-                withAnimation(.smooth(duration: 0.45)) { dragOffset = resting }
-                browseEnd?.cancel()
-                browseEnd = Task {
-                    try? await Task.sleep(for: .seconds(3))
-                    guard !Task.isCancelled else { return }
-                    withAnimation(Self.glide) {
-                        dragOffset = 0
-                        browsing = false
-                    }
-                }
-            }
-    }
-
 
     private func plain(_ lines: [String]) -> some View {
         ScrollView(showsIndicators: false) {
@@ -291,7 +267,6 @@ private struct LyricColumn: View, Equatable {
     let position: Double
     /// Performance test: off draws the current line plainly, without the word sweep.
     var sweeps = true
-    let onHeight: (Int, CGFloat) -> Void
     let onSeek: (Double) -> Void
 
     static let spacing: CGFloat = 26
@@ -315,11 +290,12 @@ private struct LyricColumn: View, Equatable {
                          browsing: browsing,
                          position: usesClock ? position : 0,
                          next: line.id + 1 < lines.count ? lines[line.id + 1].time : nil,
-                         onHeight: { height in onHeight(line.id, height) },
                          onTap: { onSeek(line.time) })
                     .equatable()
+                    .id(line.id)
             }
         }
+        .scrollTargetLayout()
     }
 }
 
@@ -334,7 +310,6 @@ private struct LyricRow: View, Equatable {
     let browsing: Bool
     let position: Double
     let next: Double?
-    let onHeight: (CGFloat) -> Void
     let onTap: () -> Void
 
     static func == (a: LyricRow, b: LyricRow) -> Bool {
@@ -355,8 +330,6 @@ private struct LyricRow: View, Equatable {
             .animation(.easeOut(duration: 0.3), value: browsing)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            // Only the height: unaffected by scrolling, so it can't feed back into the scroll.
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight($0) }
             .onTapGesture(perform: onTap)
     }
 
@@ -642,6 +615,39 @@ private struct WordSweepRenderer: TextRenderer {
                         lit.addFilter(.shadow(color: .white.opacity(0.55 * emphasis), radius: 12 * emphasis))
                     }
                     lit.draw(slice)
+                }
+            }
+        }
+    }
+}
+
+/// Turns off the rubber-band stretch at the ends of the scroll view it sits behind, so the lyrics
+/// stop dead at their first and last lines. (SwiftUI has no setting for this; it finds the
+/// underlying UIScrollView.)
+private struct ScrollBounceDisabler: UIViewRepresentable {
+    func makeUIView(context: Context) -> Finder { Finder() }
+    func updateUIView(_ view: Finder, context: Context) { view.apply() }
+
+    final class Finder: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            apply()
+        }
+
+        func apply() {
+            DispatchQueue.main.async { [weak self] in
+                var view = self?.superview
+                while let current = view {
+                    if let scrollView = current as? UIScrollView {
+                        scrollView.bounces = false
+                        return
+                    }
+                    // The scroll view may be a sibling higher up rather than a direct ancestor.
+                    if let scrollView = current.subviews.first(where: { $0 is UIScrollView }) as? UIScrollView {
+                        scrollView.bounces = false
+                        return
+                    }
+                    view = current.superview
                 }
             }
         }
