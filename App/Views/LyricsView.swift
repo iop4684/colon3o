@@ -143,6 +143,9 @@ struct LyricsView: View {
         let active = activeLine(in: lines)
         return GeometryReader { geometry in
             let target = scrollTarget(active: active, height: geometry.size.height)
+            // How far you can scroll by hand: from the first line in the current line's place to
+            // the last line there, and no further.
+            let limits = (scrollTarget(active: lines.count - 1, height: geometry.size.height) - target)...(geometry.size.height * 0.3 - target)
             // The rows live in their own view that only depends on what they show, so a drag
             // (which only changes dragOffset below) moves the column without touching any row.
             LyricColumn(lines: lines,
@@ -157,23 +160,25 @@ struct LyricsView: View {
                 .equatable()
                 .padding(.horizontal, 28)
                 .frame(width: geometry.size.width, alignment: .topLeading)
-                // One soft spring moves the whole column to the current line: a single moving
-                // layer, rather than every line animating on its own.
+                // One smooth glide moves the whole column to the current line: a single moving
+                // layer, rather than every line animating on its own. No springiness, so a tap
+                // on a far line travels there and stops, without overshooting.
                 .offset(y: target)
-                .animation(.spring(response: 0.75, dampingFraction: 0.86), value: target)
+                .animation(Self.glide, value: target)
                 .offset(y: dragOffset)
                 .onChange(of: active) { oldValue, newValue in
                     // While you're reading elsewhere, keep your place instead of jumping to the new line.
                     guard browsing else { return }
                     let height = geometry.size.height
                     let shift = scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
-                    // Same spring as the column, so the two cancel out and the text stays still.
-                    withAnimation(.spring(response: 0.75, dampingFraction: 0.86)) { dragOffset -= shift }
+                    // Same glide as the column, so the two cancel out and the text stays still.
+                    withAnimation(Self.glide) { dragOffset -= shift }
                 }
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .contentShape(Rectangle())
+                .gesture(browseDrag(limits: limits))
         }
         .clipped()
-        .contentShape(Rectangle())
-        .gesture(browseDrag)
         .mask(noFade ? AnyView(Color.black) : AnyView(fade))
     }
 
@@ -190,28 +195,41 @@ struct LyricsView: View {
         return height * 0.3 - above
     }
 
-    private var browseDrag: some Gesture {
+    /// How the column moves to a line: an even ease, no bounce.
+    static let glide = Animation.smooth(duration: 0.6)
+
+    private func browseDrag(limits: ClosedRange<CGFloat>) -> some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
                 if dragStart == nil { dragStart = dragOffset }
-                dragOffset = (dragStart ?? 0) + value.translation.height
+                dragOffset = Self.rubberBand((dragStart ?? 0) + value.translation.height, limits: limits)
                 if !browsing { withAnimation(.easeOut(duration: 0.25)) { browsing = true } }
                 browseEnd?.cancel()
             }
             .onEnded { value in
                 dragStart = nil
-                let fling = (value.predictedEndTranslation.height - value.translation.height) * 0.6
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.9)) { dragOffset += fling }
+                // A flick carries on a little, but always stops between the first and last line.
+                let fling = (value.predictedEndTranslation.height - value.translation.height) * 0.5
+                let resting = min(max(dragOffset + fling, limits.lowerBound), limits.upperBound)
+                withAnimation(.smooth(duration: 0.45)) { dragOffset = resting }
                 browseEnd?.cancel()
                 browseEnd = Task {
                     try? await Task.sleep(for: .seconds(3))
                     guard !Task.isCancelled else { return }
-                    withAnimation(.spring(response: 0.9, dampingFraction: 0.88)) {
+                    withAnimation(Self.glide) {
                         dragOffset = 0
                         browsing = false
                     }
                 }
             }
+    }
+
+    /// Past the first or last line the column still follows your finger, but only a third as
+    /// far, like the edge of any iOS list.
+    private static func rubberBand(_ offset: CGFloat, limits: ClosedRange<CGFloat>) -> CGFloat {
+        if offset > limits.upperBound { return limits.upperBound + (offset - limits.upperBound) / 3 }
+        if offset < limits.lowerBound { return limits.lowerBound + (offset - limits.lowerBound) / 3 }
+        return offset
     }
 
     private func plain(_ lines: [String]) -> some View {
