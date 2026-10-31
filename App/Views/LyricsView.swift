@@ -195,6 +195,11 @@ private struct WordByWordLine: View {
 
     @State private var anchor = Anchor(position: 0, at: .distantPast)
 
+    /// The sweep runs ahead of the singing: it starts this much early…
+    static let lead = 0.12
+    /// …and takes this share of the word's length, so it never feels behind.
+    static let pace = 0.65
+
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60)) { context in
             let elapsed = min(max(context.date.timeIntervalSince(anchor.at), 0), 0.25)
@@ -216,7 +221,7 @@ private struct WordByWordLine: View {
             let next = index + 1 < words.count ? words[index + 1].time : word.time + 1
             let end = knownEnd ?? min(next, word.time + 1)
             let span = max(end - word.time, 0.05)
-            let progress = min(max((now - word.time) / span, 0), 1)
+            let progress = min(max((now + Self.lead - word.time) / (span * Self.pace), 0), 1)
             let held = knownEnd != nil && span >= 1 && Self.canEmphasize(word.text)
             let emphasis = held ? sin(.pi * progress) : 0
             result = result + Text(word.text).customAttribute(WordSweep(index: index, progress: progress, emphasis: emphasis))
