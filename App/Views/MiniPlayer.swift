@@ -17,8 +17,8 @@ struct MiniPlayerContent: View {
                     ArtworkPlaceholder()
                 }
             }
-            .frame(width: compact ? 28 : 36, height: compact ? 28 : 36)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .frame(width: compact ? 24 : 30, height: compact ? 24 : 30)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(player.current?.title ?? "Not Playing")
