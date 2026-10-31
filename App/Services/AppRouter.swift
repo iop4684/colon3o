@@ -90,9 +90,7 @@ final class AppRouter: ObservableObject {
     @Published var backupRestore: BackupRestoreRequest?
 
     init() {
-        // The Home tab is hidden in this fork; a saved Home selection opens Library instead.
-        let saved = UserDefaults.standard.string(forKey: "selectedTab").flatMap(AppTab.init(rawValue:))
-        tab = saved == .trending ? .library : (saved ?? .library)
+        tab = UserDefaults.standard.string(forKey: "selectedTab").flatMap(AppTab.init(rawValue:)) ?? .library
     }
 
     func importMusic() { presentImporter(.music) }
@@ -132,7 +130,7 @@ final class AppRouter: ObservableObject {
             tab = .library
         case "home", "trending", "charts":
             showPlayer = false
-            tab = .library  // Home tab hidden in this fork.
+            tab = .trending
         case "search":
             showPlayer = false
             tab = .search

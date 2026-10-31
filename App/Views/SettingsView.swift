@@ -38,7 +38,17 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    NavigationLink("Home Sections") { HomeSectionsSettings() }
+                } header: {
+                    Text("Home")
+                }
+
+                Section {
                     Toggle("Autoplay", isOn: $player.autoplay)
+                    Toggle("Autoplay Only from Library", isOn: $player.autoplayLibraryOnly)
+                        .disabled(!player.autoplay)
+                    Toggle("Download Suggestions Automatically", isOn: $player.autoplayAutoDownload)
+                        .disabled(!player.autoplay || player.autoplayLibraryOnly)
                     NavigationLink {
                         EqualizerView(equalizer: player.equalizer)
                     } label: {
@@ -52,7 +62,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Playback")
                 } footer: {
-                    Text("Autoplay keeps the music going from your library when the queue ends. With a Last.fm API key (below) it favours songs similar to what you played. Recently played songs are skipped.\n\nBit-Perfect Mode is for USB DACs: it switches the output to each song's sample rate and skips the EQ and all volume processing, so the DAC gets the file's exact samples. Turn the iPhone volume all the way up and use the DAC's volume. Bluetooth, AirPlay and the speaker can't be bit-perfect.")
+                    Text("Autoplay keeps the music going when the queue ends. With a Last.fm API key (below) it picks songs similar to what you played: ones in your library play straight away; ones you don't have show under Up Next with a Download button, and play once downloaded (into the \u{201C}Found by Autoplay\u{201D} playlist). Turn on Download Suggestions Automatically to skip the button, or Only from Library to never suggest downloads. Recently played songs are skipped.\n\nBit-Perfect Mode is for USB DACs: it switches the output to each song's sample rate and skips the EQ and all volume processing, so the DAC gets the file's exact samples. Turn the iPhone volume all the way up and use the DAC's volume. Bluetooth, AirPlay and the speaker can't be bit-perfect.")
                 }
 
                 Section {

@@ -10,6 +10,9 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $router.tab) {
+            Tab("Home", systemImage: "square.grid.2x2", value: AppTab.trending) {
+                HomeView().modifier(FallbackMiniPlayer(open: openPlayer))
+            }
             Tab("Library", systemImage: "music.note.house", value: AppTab.library) {
                 LibraryView().modifier(FallbackMiniPlayer(open: openPlayer))
             }
