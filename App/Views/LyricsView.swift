@@ -11,12 +11,24 @@ struct LyricsView: View {
     @EnvironmentObject private var router: AppRouter
     @State private var lyrics: Lyrics?
     @State private var isLoading = true
+    /// The online source being asked right now, for the loading status.
+    @State private var checking: LyricsSource?
+    /// Where the lyrics on screen were fetched from (nil for files you added).
+    @State private var fetchedFrom: String?
     @State private var userScrolledAt: Date?
 
     var body: some View {
         Group {
             if isLoading {
-                ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 12) {
+                    ProgressView().tint(.white)
+                    if let checking {
+                        Text("Checking \(checking.rawValue)\u{2026}")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 switch lyrics {
                 case let .synced(lines):
@@ -27,7 +39,13 @@ struct LyricsView: View {
                     message("Instrumental", systemImage: "music.note")
                 case .notFound:
                     VStack(spacing: 12) {
-                        message("No lyrics found on LRCLIB", systemImage: "quote.bubble")
+                        message("No lyrics found", systemImage: "quote.bubble")
+                            .overlay(alignment: .bottom) {
+                                Text("Checked " + LyricsSource.allCases.map(\.rawValue).joined(separator: " and "))
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.45))
+                                    .offset(y: 24)
+                            }
                             .frame(maxHeight: 120)
                         Button("Import .lrc File…") { router.importLyrics(for: track) }
                             .buttonStyle(.bordered)
@@ -43,18 +61,30 @@ struct LyricsView: View {
                 }
             }
         }
+        .overlay(alignment: .bottom) {
+            if !isLoading, let fetchedFrom {
+                Text("Lyrics from \(fetchedFrom)")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(.bottom, 6)
+            }
+        }
         .task(id: "\(track.id)#\(router.lyricsRevision)") { await load() }
     }
 
     private func load() async {
         isLoading = true
+        checking = nil
         let file = LibraryStore.lyricsURL(for: track)
         if let local = await Task.detached(priority: .userInitiated, operation: { LyricsService.localLyrics(at: file) }).value {
             lyrics = local
         } else {
             lyrics = await LyricsService.shared.lyrics(title: track.title, artist: track.artist, album: albumTitle,
-                                                       duration: track.duration, cacheKey: track.id)
+                                                       duration: track.duration, cacheKey: track.id, saveTo: file,
+                                                       onSource: { checking = $0 })
         }
+        fetchedFrom = await Task.detached { LyricsService.fetchedSource(of: file) }.value
+        checking = nil
         isLoading = false
     }
 

@@ -19,8 +19,16 @@ enum LyricsOrigin {
     case file, lrclib
 }
 
-/// Lyrics from a .lrc file next to the song if there is one, otherwise LRCLIB (lrclib.net):
-/// free, no API key, mostly time-synced. LRCLIB answers are cached on disk.
+/// Online lyrics sources, in the order they're asked.
+enum LyricsSource: String, CaseIterable {
+    case lrclib = "LRCLIB"
+    case petit = "PetitLyrics"
+}
+
+/// Lyrics from a .lrc file next to the song if there is one, otherwise the online sources in
+/// turn: LRCLIB (lrclib.net: free, no API key, mostly time-synced), then PetitLyrics. Whatever
+/// is found is saved next to the song as a .lrc (marked as fetched), so it works offline after.
+/// Songs no source has are remembered for a few days.
 actor LyricsService {
     static let shared = LyricsService()
 
@@ -57,8 +65,14 @@ actor LyricsService {
         return trimmed.isEmpty ? nil : .plain(Array(trimmed))
     }
 
-    /// nil means the lookup failed (offline, server error), so the caller can offer a retry.
-    func lyrics(title: String, artist: String, album: String?, duration: Double, cacheKey: String) async -> Lyrics? {
+    /// First line of a .lrc this app saved after fetching it, so it can tell those from files you added.
+    nonisolated static let fetchedMarker = "[re:colon3o"
+
+    /// nil means a lookup failed (offline, server error) and nothing was found elsewhere, so the
+    /// caller can offer a retry. `saveTo` is where found lyrics are kept as a .lrc; `onSource`
+    /// hears which source is being asked.
+    func lyrics(title: String, artist: String, album: String?, duration: Double, cacheKey: String,
+                saveTo lrcFile: URL? = nil, onSource: @escaping @MainActor (LyricsSource) -> Void = { _ in }) async -> Lyrics? {
         let file = directory.appendingPathComponent(MD5.hex(cacheKey) + ".json")
         if let data = try? Data(contentsOf: file), let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             // Misses are retried after a few days in case someone has added the song since.
@@ -68,20 +82,64 @@ actor LyricsService {
         }
         guard AppSettings.lyricsLookupEnabled else { return .notFound }
 
-        let entry: Entry?
-        do {
-            entry = try await fetch(title: title, artist: artist, album: album, duration: duration)
-        } catch {
-            return nil
+        var failed = false
+        for source in LyricsSource.allCases {
+            await onSource(source)
+            do {
+                switch source {
+                case .lrclib:
+                    guard let entry = try await fetch(title: title, artist: artist, album: album, duration: duration) else { continue }
+                    let found = Self.lyrics(from: entry)
+                    if found == .notFound { continue }
+                    if let text = entry.syncedLyrics?.nonEmpty ?? entry.plainLyrics?.nonEmpty {
+                        save(text, from: source, to: lrcFile)
+                    } else {
+                        remember(entry, in: file)  // Instrumental: nothing to save as a file.
+                    }
+                    return found
+                case .petit:
+                    guard let result = try await PetitLyrics.fetch(title: title, artist: artist) else { continue }
+                    save(result.lrc, from: source, to: lrcFile)
+                    return result.lyrics
+                }
+            } catch {
+                failed = true
+                Diagnostics.shared.log("Lyrics: \(source.rawValue) failed for \(artist) – \(title): \(error.localizedDescription)",
+                                       category: "lyrics")
+            }
         }
+        if failed { return nil }
+        remember(nil, in: file)
+        return .notFound
+    }
+
+    private func remember(_ entry: Entry?, in file: URL) {
         if let data = try? JSONEncoder().encode(Stored(entry: entry, fetched: Date())) {
             try? data.write(to: file, options: .atomic)
         }
-        return Self.lyrics(from: entry)
     }
 
-    func forget(cacheKey: String) {
+    private func save(_ lrc: String, from source: LyricsSource, to file: URL?) {
+        guard let file else { return }
+        let text = "\(Self.fetchedMarker) \(source.rawValue)]\n" + lrc + "\n"
+        try? Data(text.utf8).write(to: file, options: .atomic)
+    }
+
+    /// Which source a .lrc this app saved came from; nil for files you added yourself.
+    nonisolated static func fetchedSource(of file: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        let head = String(decoding: (try? handle.read(upToCount: 128)) ?? Data(), as: UTF8.self)
+        guard head.hasPrefix(fetchedMarker), let end = head.firstIndex(of: "]") else { return nil }
+        return head[head.index(head.startIndex, offsetBy: fetchedMarker.count)..<end].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Search Again: drops the remembered miss and any .lrc fetched earlier (files you added stay).
+    func forget(cacheKey: String, fetchedFile: URL? = nil) {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(MD5.hex(cacheKey) + ".json"))
+        if let fetchedFile, Self.fetchedSource(of: fetchedFile) != nil {
+            try? FileManager.default.removeItem(at: fetchedFile)
+        }
     }
 
     private func fetch(title: String, artist: String, album: String?, duration: Double) async throws -> Entry? {
@@ -135,6 +193,8 @@ actor LyricsService {
     }
 
     /// "[01:23.45] text" lines; a line may carry several timestamps.
+    private static let wordTag = try! NSRegularExpression(pattern: #"<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>"#)
+
     static func parseLRC(_ text: String) -> [LyricLine] {
         let regex = try! NSRegularExpression(pattern: #"\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]"#)
         var lines: [(Double, String)] = []
@@ -144,7 +204,10 @@ actor LyricsService {
             guard let last = matches.last, let textRange = Range(NSRange(location: last.range.upperBound,
                                                                          length: range.upperBound - last.range.upperBound), in: raw)
             else { continue }
-            let words = raw[textRange].trimmingCharacters(in: .whitespaces)
+            // Enhanced LRC word timings (<mm:ss.xx>) aren't shown yet; keep the words.
+            let words = wordTag.stringByReplacingMatches(in: String(raw[textRange]), range: NSRange(location: 0, length: raw[textRange].utf16.count),
+                                                          withTemplate: "")
+                .trimmingCharacters(in: .whitespaces)
             for match in matches {
                 guard let minutes = Range(match.range(at: 1), in: raw).flatMap({ Double(raw[$0]) }),
                       let secondsText = Range(match.range(at: 2), in: raw).map({ raw[$0].replacingOccurrences(of: ":", with: ".") }),
@@ -154,4 +217,8 @@ actor LyricsService {
         }
         return lines.sorted { $0.0 < $1.0 }.enumerated().map { LyricLine(id: $0.offset, time: $0.element.0, text: $0.element.1) }
     }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

@@ -240,7 +240,7 @@ struct LibrarySettings: View {
             } header: {
                 Text("Online")
             } footer: {
-                Text("Artwork comes from the iTunes Search API when a song has none of its own; lyrics come from LRCLIB. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
+                Text("Artwork comes from the iTunes Search API when a song has none of its own; lyrics come from LRCLIB, then PetitLyrics, and are saved next to the song as a .lrc for offline use. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
             }
         }
         .navigationTitle("Library")

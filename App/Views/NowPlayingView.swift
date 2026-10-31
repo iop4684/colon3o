@@ -150,7 +150,7 @@ struct NowPlayingView: View {
             Button {
                 mode = .lyrics
                 Task {
-                    await LyricsService.shared.forget(cacheKey: track.id)
+                    await LyricsService.shared.forget(cacheKey: track.id, fetchedFile: LibraryStore.lyricsURL(for: track))
                     router.lyricsChanged()
                 }
             } label: {
