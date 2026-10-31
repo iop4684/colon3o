@@ -11,8 +11,8 @@ struct LyricsView: View {
     @EnvironmentObject private var router: AppRouter
     @State private var lyrics: Lyrics?
     @State private var isLoading = true
-    /// The online source being asked right now, for the loading status.
-    @State private var checking: LyricsSource?
+    /// The online sources still being asked, for the loading status.
+    @State private var checking: [LyricsSource] = []
     /// Where the lyrics on screen were fetched from (nil for files you added).
     @State private var fetchedFrom: String?
     @State private var userScrolledAt: Date?
@@ -22,8 +22,8 @@ struct LyricsView: View {
             if isLoading {
                 VStack(spacing: 12) {
                     ProgressView().tint(.white)
-                    if let checking {
-                        Text("Checking \(checking.rawValue)\u{2026}")
+                    if !checking.isEmpty {
+                        Text("Checking " + checking.map(\.rawValue).joined(separator: " and ") + "\u{2026}")
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.6))
                     }
@@ -74,17 +74,17 @@ struct LyricsView: View {
 
     private func load() async {
         isLoading = true
-        checking = nil
+        checking = []
         let file = LibraryStore.lyricsURL(for: track)
         if let local = await Task.detached(priority: .userInitiated, operation: { LyricsService.localLyrics(at: file) }).value {
             lyrics = local
         } else {
             lyrics = await LyricsService.shared.lyrics(title: track.title, artist: track.artist, album: albumTitle,
                                                        duration: track.duration, cacheKey: track.id, saveTo: file,
-                                                       onSource: { checking = $0 })
+                                                       onPending: { checking = $0 })
         }
         fetchedFrom = await Task.detached { LyricsService.fetchedSource(of: file) }.value
-        checking = nil
+        checking = []
         isLoading = false
     }
 
@@ -179,9 +179,11 @@ struct LyricsView: View {
     }
 }
 
-/// One line lighting up word by word. The playback position arrives about five times a second,
-/// so between updates it's carried forward on the clock (at most a quarter second, so a pause
-/// doesn't run ahead) to keep the fill smooth.
+/// One line lighting up word by word, the way Apple Music does: a soft-edged sweep runs left to
+/// right through each word from when it starts to when it ends, the sung part floats up a
+/// little, and notes held a second or more glow and swell. The playback position arrives about
+/// five times a second, so between updates it's carried forward on the clock (at most a quarter
+/// second, so a pause doesn't run ahead) to keep the sweep smooth.
 private struct WordByWordLine: View {
     let line: LyricLine
     let position: Double
@@ -194,25 +196,107 @@ private struct WordByWordLine: View {
     @State private var anchor = Anchor(position: 0, at: .distantPast)
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 60)) { context in
             let elapsed = min(max(context.date.timeIntervalSince(anchor.at), 0), 0.25)
             text(at: anchor.position + elapsed)
+                .textRenderer(WordSweepRenderer())
         }
         .onAppear { anchor = Anchor(position: position, at: Date()) }
         .onChange(of: position) { _, newValue in anchor = Anchor(position: newValue, at: Date()) }
     }
 
-    /// Each word brightens from the dimmed level to full over the time until the next word.
     private func text(at now: Double) -> Text {
         let words = line.words
         var result = Text("")
         for index in words.indices {
             let word = words[index]
-            let end = index + 1 < words.count ? words[index + 1].time : (line.wordsEnd ?? word.time + 0.6)
+            // A known end (from the lyrics) is used as is. Otherwise the word runs until the next
+            // one starts, but no longer than a second, so a pause after it doesn't stretch it.
+            let knownEnd = word.end ?? (index == words.count - 1 ? line.wordsEnd : nil)
+            let next = index + 1 < words.count ? words[index + 1].time : word.time + 1
+            let end = knownEnd ?? min(next, word.time + 1)
             let span = max(end - word.time, 0.05)
             let progress = min(max((now - word.time) / span, 0), 1)
-            result = result + Text(word.text).foregroundStyle(Color.white.opacity(0.32 + 0.68 * progress))
+            let held = knownEnd != nil && span >= 1 && Self.canEmphasize(word.text)
+            let emphasis = held ? sin(.pi * progress) : 0
+            result = result + Text(word.text).customAttribute(WordSweep(index: index, progress: progress, emphasis: emphasis))
         }
         return result
+    }
+
+    /// Like Apple Music: CJK words of any length, other words of 2 to 7 letters.
+    private static func canEmphasize(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        let isCJK = trimmed.unicodeScalars.contains { scalar in
+            (0x3040...0x30FF).contains(scalar.value) || (0x3400...0x9FFF).contains(scalar.value)
+                || (0xAC00...0xD7AF).contains(scalar.value)
+        }
+        return isCJK ? !trimmed.isEmpty : (2...7).contains(trimmed.count)
+    }
+}
+
+/// Per-word state for the renderer. `index` keeps neighbouring words from merging into one run.
+private struct WordSweep: TextAttribute {
+    var index: Int
+    /// 0 not sung yet … 1 sung.
+    var progress: Double
+    /// 0 … 1, how much a held note glows and swells right now.
+    var emphasis: Double
+}
+
+/// Draws each word dimmed, then the sung part over it at full brightness through a mask whose
+/// soft edge moves left to right.
+private struct WordSweepRenderer: TextRenderer {
+    /// Same as the other lines' dimming.
+    static let dimmed = 0.32
+    /// How far a fully sung word has floated up, in points.
+    static let lift: CGFloat = 1.5
+
+    /// Room for the glow and swell to draw past the text's edges.
+    var displayPadding: EdgeInsets { EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16) }
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        for line in layout {
+            for run in line {
+                guard let sweep = run[WordSweep.self] else {
+                    context.draw(run)
+                    continue
+                }
+                let bounds = run.typographicBounds.rect
+                var word = context
+                if sweep.emphasis > 0 {
+                    let scale = 1 + 0.06 * sweep.emphasis
+                    word.translateBy(x: bounds.midX, y: bounds.midY)
+                    word.scaleBy(x: scale, y: scale)
+                    word.translateBy(x: -bounds.midX, y: -bounds.midY)
+                }
+                let eased = sweep.progress * sweep.progress * (3 - 2 * sweep.progress)
+                word.translateBy(x: 0, y: -Self.lift * eased)
+
+                if sweep.progress < 1 {
+                    var dim = word
+                    dim.opacity = Self.dimmed
+                    dim.draw(run)
+                }
+                guard sweep.progress > 0 else { continue }
+
+                var lit = word
+                if sweep.progress < 1 {
+                    let edge = max(bounds.height * 0.45, 6)
+                    let front = bounds.minX + (bounds.width + edge) * sweep.progress
+                    let left = bounds.minX - edge
+                    lit.clipToLayer { mask in
+                        let area = CGRect(x: left, y: bounds.minY - bounds.height, width: max(front - left, 0), height: bounds.height * 3)
+                        mask.fill(Path(area), with: .linearGradient(Gradient(colors: [.white, .white.opacity(0)]),
+                                                                    startPoint: CGPoint(x: max(front - edge, left), y: 0),
+                                                                    endPoint: CGPoint(x: front, y: 0)))
+                    }
+                }
+                if sweep.emphasis > 0 {
+                    lit.addFilter(.shadow(color: .white.opacity(0.6 * sweep.emphasis), radius: 12 * sweep.emphasis))
+                }
+                lit.draw(run)
+            }
+        }
     }
 }

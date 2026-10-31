@@ -48,7 +48,7 @@ enum PetitLyrics {
         return Result(lyrics: .plain(text.components(separatedBy: "\n")), lrc: text)
     }
 
-    /// `<wsy><line><linestring>…</linestring><word><wordstring>…</wordstring><starttime>ms</starttime>…`
+    /// `<wsy><line><linestring>…</linestring><word><wordstring>…</wordstring><starttime>ms</starttime><endtime>ms</endtime>…`
     private static func wordSynced(_ data: Data) -> Result? {
         guard let root = XMLTree.parse(data) else { return nil }
         var lrc: [String] = []
@@ -58,11 +58,24 @@ enum PetitLyrics {
             let starts = words.compactMap { $0.child("starttime").flatMap { Int($0.value) } }
             guard let first = starts.first, first >= 0 else { continue }
 
-            // Word timings only when every word has its text and they add up to the line.
-            let pieces = words.map { ($0.child("wordstring")?.rawText ?? "", $0.child("starttime").flatMap { Int($0.value) }) }
-            if pieces.count > 1, pieces.allSatisfy({ $0.1 != nil }),
-               pieces.map(\.0).joined().trimmingCharacters(in: .whitespaces) == text {
-                lrc.append("[\(stamp(first))]" + pieces.map { "<\(stamp($0.1!))>\($0.0)" }.joined())
+            // Word timings only when every word has its text and start, and they add up to the line.
+            let pieces = words.map { word in
+                (text: word.child("wordstring")?.rawText ?? "",
+                 start: word.child("starttime").flatMap { Int($0.value) },
+                 end: word.child("endtime").flatMap { Int($0.value) })
+            }
+            if !pieces.isEmpty, pieces.allSatisfy({ $0.start != nil }),
+               pieces.map(\.text).joined().trimmingCharacters(in: .whitespaces) == text {
+                var out = "[\(stamp(first))]"
+                for (index, piece) in pieces.enumerated() {
+                    let start = piece.start!
+                    out += "<\(stamp(start))>\(piece.text)"
+                    // An empty tag after the word marks its end, when it ends before the next one starts.
+                    guard let end = piece.end, end > start else { continue }
+                    let next = index + 1 < pieces.count ? pieces[index + 1].start! : Int.max
+                    if end + 10 < next || index == pieces.count - 1 { out += "<\(stamp(min(end, next)))>" }
+                }
+                lrc.append(out)
             } else {
                 lrc.append("[\(stamp(first))]\(text)")
             }

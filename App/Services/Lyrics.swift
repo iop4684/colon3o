@@ -14,7 +14,9 @@ struct LyricLine: Identifiable, Hashable {
 /// One timed piece of a line: a word or syllable, with any spaces that follow it.
 struct LyricWord: Hashable {
     let time: Double
-    let text: String
+    var text: String
+    /// When it stops being sung, if the lyrics say (an empty <mm:ss.xx> tag after it).
+    var end: Double? = nil
 }
 
 enum Lyrics: Equatable {
@@ -29,15 +31,16 @@ enum LyricsOrigin {
     case file, lrclib
 }
 
-/// Online lyrics sources, in the order they're asked.
+/// Online lyrics sources.
 enum LyricsSource: String, CaseIterable {
     case lrclib = "LRCLIB"
     case petit = "PetitLyrics"
 }
 
-/// Lyrics from a .lrc file next to the song if there is one, otherwise the online sources in
-/// turn: LRCLIB (lrclib.net: free, no API key, mostly time-synced), then PetitLyrics. Whatever
-/// is found is saved next to the song as a .lrc (marked as fetched), so it works offline after.
+/// Lyrics from a .lrc file next to the song if there is one, otherwise the best of the online
+/// sources: LRCLIB (lrclib.net: free, no API key, mostly line-synced) and PetitLyrics (often
+/// word-synced). Whatever is used is saved next to the song as a .lrc (marked as fetched), so it
+/// works offline after.
 /// Songs no source has are remembered for a few days.
 actor LyricsService {
     static let shared = LyricsService()
@@ -78,11 +81,22 @@ actor LyricsService {
     /// First line of a .lrc this app saved after fetching it, so it can tell those from files you added.
     nonisolated static let fetchedMarker = "[re:colon3o"
 
+    /// What one source came back with.
+    private enum Outcome {
+        case found(Lyrics, lrc: String?, entry: Entry?)
+        case none
+        case failed
+    }
+
     /// nil means a lookup failed (offline, server error) and nothing was found elsewhere, so the
-    /// caller can offer a retry. `saveTo` is where found lyrics are kept as a .lrc; `onSource`
-    /// hears which source is being asked.
+    /// caller can offer a retry. `saveTo` is where found lyrics are kept as a .lrc; `onPending`
+    /// hears which sources are still being asked.
+    ///
+    /// All sources are asked at once and the best answer wins: word-synced (PetitLyrics), then
+    /// line-synced (LRCLIB, which also checks the song's length), then plain text from LRCLIB,
+    /// then from PetitLyrics. It's saved, so this only happens once per song.
     func lyrics(title: String, artist: String, album: String?, duration: Double, cacheKey: String,
-                saveTo lrcFile: URL? = nil, onSource: @escaping @MainActor (LyricsSource) -> Void = { _ in }) async -> Lyrics? {
+                saveTo lrcFile: URL? = nil, onPending: @escaping @MainActor ([LyricsSource]) -> Void = { _ in }) async -> Lyrics? {
         let file = directory.appendingPathComponent(MD5.hex(cacheKey) + ".json")
         if let data = try? Data(contentsOf: file), let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             // Misses are retried after a few days in case someone has added the song since.
@@ -92,35 +106,63 @@ actor LyricsService {
         }
         guard AppSettings.lyricsLookupEnabled else { return .notFound }
 
-        var failed = false
-        for source in LyricsSource.allCases {
-            await onSource(source)
-            do {
-                switch source {
-                case .lrclib:
-                    guard let entry = try await fetch(title: title, artist: artist, album: album, duration: duration) else { continue }
-                    let found = Self.lyrics(from: entry)
-                    if found == .notFound { continue }
-                    if let text = entry.syncedLyrics?.nonEmpty ?? entry.plainLyrics?.nonEmpty {
-                        save(text, from: source, to: lrcFile)
-                    } else {
-                        remember(entry, in: file)  // Instrumental: nothing to save as a file.
-                    }
-                    return found
-                case .petit:
-                    guard let result = try await PetitLyrics.fetch(title: title, artist: artist) else { continue }
-                    save(result.lrc, from: source, to: lrcFile)
-                    return result.lyrics
-                }
-            } catch {
-                failed = true
-                Diagnostics.shared.log("Lyrics: \(source.rawValue) failed for \(artist) – \(title): \(error.localizedDescription)",
-                                       category: "lyrics")
+        var pending = LyricsSource.allCases
+        await onPending(pending)
+        var outcomes: [LyricsSource: Outcome] = [:]
+        await withTaskGroup(of: (LyricsSource, Outcome).self) { group in
+            for source in LyricsSource.allCases {
+                group.addTask { (source, await self.ask(source, title: title, artist: artist, album: album, duration: duration)) }
+            }
+            for await (source, outcome) in group {
+                outcomes[source] = outcome
+                pending.removeAll { $0 == source }
+                await onPending(pending)
             }
         }
-        if failed { return nil }
+
+        // Best first.
+        let ranked: [(LyricsSource, (Lyrics) -> Bool)] = [
+            (.petit, { lyrics in
+                if case let .synced(lines) = lyrics { return lines.contains { line in !line.words.isEmpty } }
+                return false
+            }),
+            (.lrclib, { if case .synced = $0 { return true }; return false }),
+            (.petit, { if case .synced = $0 { return true }; return false }),
+            (.lrclib, { if case .plain = $0 { return true }; return false }),
+            (.petit, { if case .plain = $0 { return true }; return false }),
+            (.lrclib, { $0 == .instrumental }),
+        ]
+        for (source, accepts) in ranked {
+            guard case let .found(lyrics, lrc, entry)? = outcomes[source], accepts(lyrics) else { continue }
+            if let lrc {
+                save(lrc, from: source, to: lrcFile)
+            } else if let entry {
+                remember(entry, in: file)  // Instrumental: nothing to save as a file.
+            }
+            return lyrics
+        }
+        if outcomes.values.contains(where: { if case .failed = $0 { return true }; return false }) { return nil }
         remember(nil, in: file)
         return .notFound
+    }
+
+    private func ask(_ source: LyricsSource, title: String, artist: String, album: String?, duration: Double) async -> Outcome {
+        do {
+            switch source {
+            case .lrclib:
+                guard let entry = try await fetch(title: title, artist: artist, album: album, duration: duration) else { return .none }
+                let found = Self.lyrics(from: entry)
+                if found == .notFound { return .none }
+                return .found(found, lrc: entry.syncedLyrics?.nonEmpty ?? entry.plainLyrics?.nonEmpty, entry: entry)
+            case .petit:
+                guard let result = try await PetitLyrics.fetch(title: title, artist: artist) else { return .none }
+                return .found(result.lyrics, lrc: result.lrc, entry: nil)
+            }
+        } catch {
+            Diagnostics.shared.log("Lyrics: \(source.rawValue) failed for \(artist) – \(title): \(error.localizedDescription)",
+                                   category: "lyrics")
+            return .failed
+        }
     }
 
     private func remember(_ entry: Entry?, in file: URL) {
@@ -235,7 +277,7 @@ actor LyricsService {
     }
 
     /// The words of an enhanced LRC line, each starting at its <mm:ss.xx> tag. A tag with nothing
-    /// after it marks where the last word ends.
+    /// (or only spaces) after it marks where the word before it ends.
     private static func wordTimings(in rest: String, lineTime: Double) -> ([LyricWord], Double?) {
         let tags = wordTag.matches(in: rest, range: NSRange(rest.startIndex..., in: rest))
         guard !tags.isEmpty, let first = Range(tags[0].range, in: rest) else { return ([], nil) }
@@ -249,6 +291,10 @@ actor LyricsService {
             let next = index + 1 < tags.count ? Range(tags[index + 1].range, in: rest)?.lowerBound ?? rest.endIndex : rest.endIndex
             let piece = String(rest[tagRange.upperBound..<next])
             if piece.trimmingCharacters(in: .whitespaces).isEmpty {
+                if let last = words.indices.last {
+                    words[last].end = time
+                    words[last].text += piece
+                }
                 if index == tags.count - 1 { end = time }
             } else {
                 words.append(LyricWord(time: time, text: piece))
@@ -256,11 +302,8 @@ actor LyricsService {
         }
         guard !words.isEmpty else { return ([], nil) }
         // Same spacing as the line text: no leading or trailing spaces on the line as a whole.
-        words[0] = LyricWord(time: words[0].time, text: String(words[0].text.drop(while: { $0 == " " })))
-        let lastIndex = words.count - 1
-        var tail = words[lastIndex].text
-        while tail.hasSuffix(" ") { tail.removeLast() }
-        words[lastIndex] = LyricWord(time: words[lastIndex].time, text: tail)
+        words[0].text = String(words[0].text.drop(while: { $0 == " " }))
+        while words[words.count - 1].text.hasSuffix(" ") { words[words.count - 1].text.removeLast() }
         return (words, end)
     }
 
