@@ -136,36 +136,26 @@ struct LyricsView: View {
         let active = activeLine(in: lines)
         return GeometryReader { geometry in
             let target = scrollTarget(active: active, height: geometry.size.height)
-            VStack(alignment: .leading, spacing: 26) {
-                ForEach(lines) { line in
-                    let isActive = line.id == active
-                    // Each row is its own view that only redraws when what it shows changes: a
-                    // position tick reaches the current row only, and scrolling by hand moves the
-                    // whole column at once instead of every row.
-                    LyricRow(line: line,
-                             romaji: showRomaji ? romaji[line.id] : nil,
-                             isActive: isActive,
-                             distance: active < 0 ? 1 : abs(line.id - active),
-                             browsing: browsing,
-                             position: isActive || line.text == "♪" ? position + timingLead : 0,
-                             next: line.id + 1 < lines.count ? lines[line.id + 1].time : nil,
-                             target: target,
-                             delay: stagger(line.id, active: active),
-                             onFrame: { frame in lineFrames[line.id] = frame },
-                             onTap: { onSeek(line.time) })
-                        .equatable()
+            // The rows live in their own view that only depends on what they show, so a drag
+            // (which only changes dragOffset below) moves the column without touching any row.
+            LyricColumn(lines: lines,
+                        romaji: showRomaji ? romaji : [:],
+                        active: active,
+                        browsing: browsing,
+                        position: position + timingLead,
+                        target: target,
+                        onFrame: recordFrame,
+                        onSeek: onSeek)
+                .equatable()
+                .padding(.horizontal, 28)
+                .frame(width: geometry.size.width, alignment: .topLeading)
+                .offset(y: dragOffset)
+                .onChange(of: active) { oldValue, newValue in
+                    // While you're reading elsewhere, keep your place instead of jumping to the new line.
+                    guard browsing else { return }
+                    let height = geometry.size.height
+                    dragOffset -= scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
                 }
-            }
-            .coordinateSpace(.named("lyricsColumn"))
-            .padding(.horizontal, 28)
-            .frame(width: geometry.size.width, alignment: .topLeading)
-            .offset(y: dragOffset)
-            .onChange(of: active) { oldValue, newValue in
-                // While you're reading elsewhere, keep your place instead of jumping to the new line.
-                guard browsing else { return }
-                let height = geometry.size.height
-                dragOffset -= scrollTarget(active: newValue, height: height) - scrollTarget(active: oldValue, height: height)
-            }
         }
         .clipped()
         .contentShape(Rectangle())
@@ -173,13 +163,14 @@ struct LyricsView: View {
         .mask(fade)
     }
 
-    private func scrollTarget(active: Int, height: CGFloat) -> CGFloat {
-        height * 0.3 - (lineFrames[max(active, 0)]?.minY ?? 0)
+    /// Remembers where a line sits, ignoring sub-point jitter so layout can't feed back on itself.
+    private func recordFrame(_ id: Int, _ frame: CGRect) {
+        if let old = lineFrames[id], abs(old.minY - frame.minY) < 0.5, abs(old.height - frame.height) < 0.5 { return }
+        lineFrames[id] = frame
     }
 
-    /// Lines below the current one set off a little after it, up to a quarter second.
-    private func stagger(_ id: Int, active: Int) -> Double {
-        min(Double(max(id - max(active, 0), 0)) * 0.045, 0.25)
+    private func scrollTarget(active: Int, height: CGFloat) -> CGFloat {
+        height * 0.3 - (lineFrames[max(active, 0)]?.minY ?? 0)
     }
 
     private var browseDrag: some Gesture {
@@ -243,6 +234,47 @@ struct LyricsView: View {
             .init(color: .black, location: 0.85),
             .init(color: .clear, location: 1),
         ], startPoint: .top, endPoint: .bottom)
+    }
+}
+
+/// The synced lyrics column. Equatable on what it shows (not the callbacks), so scrolling by hand
+/// or a position tick that doesn't change the current line skips it entirely.
+private struct LyricColumn: View, Equatable {
+    let lines: [LyricLine]
+    let romaji: [Int: [Romaji.Piece]]
+    let active: Int
+    let browsing: Bool
+    /// Playback position (with any timing lead), used by the current line and interludes only.
+    let position: Double
+    let target: CGFloat
+    let onFrame: (Int, CGRect) -> Void
+    let onSeek: (Double) -> Void
+
+    static func == (a: LyricColumn, b: LyricColumn) -> Bool {
+        a.active == b.active && a.browsing == b.browsing && a.target == b.target && a.position == b.position
+            && a.lines.count == b.lines.count && a.lines.first?.time == b.lines.first?.time && a.romaji == b.romaji
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            ForEach(lines) { line in
+                let isActive = line.id == active
+                let usesClock = isActive || line.text == "♪"
+                LyricRow(line: line,
+                         romaji: romaji[line.id],
+                         isActive: isActive,
+                         distance: active < 0 ? 1 : abs(line.id - active),
+                         browsing: browsing,
+                         position: usesClock ? position : 0,
+                         next: line.id + 1 < lines.count ? lines[line.id + 1].time : nil,
+                         target: target,
+                         delay: min(Double(max(line.id - max(active, 0), 0)) * 0.045, 0.25),
+                         onFrame: { frame in onFrame(line.id, frame) },
+                         onTap: { onSeek(line.time) })
+                    .equatable()
+            }
+        }
+        .coordinateSpace(.named("lyricsColumn"))
     }
 }
 
