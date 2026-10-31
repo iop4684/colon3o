@@ -99,8 +99,13 @@ enum Romaji {
     }
 
     /// Words whose usual reading in songs differs from the dictionary's first choice.
+    /// (Songs often use the everyday reading where the dictionary picks the formal one: 身体 is
+    /// sung "karada", not "shintai".)
     private static let readings = ["私": "わたし", "僕": "ぼく", "貴方": "あなた", "今日": "きょう", "明日": "あした",
-                                   "一人": "ひとり", "二人": "ふたり", "大人": "おとな", "何": "なに", "日": "ひ"]
+                                   "一人": "ひとり", "二人": "ふたり", "大人": "おとな", "何": "なに", "日": "ひ",
+                                   "身体": "からだ", "体": "からだ", "故郷": "ふるさと", "此処": "ここ", "其処": "そこ",
+                                   "何処": "どこ", "今": "いま", "上手": "うま", "一緒": "いっしょ", "昨日": "きのう",
+                                   "下手": "へた", "眼": "め", "瞳": "ひとみ", "唄": "うた", "詩": "うた"]
 
     /// Kanji and kana suffixes written together with the word before them.
     private static let suffixes: Set<String> = ["的", "さん", "ちゃん", "くん", "様", "達", "たち", "性", "感"]

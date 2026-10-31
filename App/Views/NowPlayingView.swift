@@ -23,7 +23,7 @@ struct NowPlayingView: View {
         VStack(spacing: 0) {
             Capsule()
                 .fill(.white.opacity(0.35))
-                .frame(width: 38, height: 5)
+                .frame(width: 60, height: 4)  // Apple Music's width
                 .padding(.top, 10)
                 .padding(.bottom, 14)
 
