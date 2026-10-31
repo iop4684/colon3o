@@ -51,8 +51,9 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    static let siteRoot = "https://aminewallah.github.io/colon3/"
-    nonisolated static let repository = "https://github.com/AmineWallah/colon3"
+    // Points at this fork, so the app never offers to replace it with the original's builds.
+    static let siteRoot = "https://iop4684.github.io/colon30/"
+    nonisolated static let repository = "https://github.com/iop4684/colon30"
 
     @Published private(set) var state: State = .idle
     @Published private(set) var lastChecked: Date?
