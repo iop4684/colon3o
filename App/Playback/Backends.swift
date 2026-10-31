@@ -113,6 +113,10 @@ final class EngineBackend: PlaybackBackend {
             throw UnsupportedFormat(channels: format.channelCount, sampleRate: format.sampleRate, frames: newFile.length)
         }
         stopNode()
+        // Paused (or never started): drop what the paused engine still holds, so the first
+        // milliseconds after the next start aren't the old song. A running engine keeps running:
+        // the node just goes silent until the new file plays.
+        if !engine.isRunning { engine.stop() }
         file = newFile
         // Bit-perfect: the output is switched to the song's rate in play(), once the audio
         // session is active. Doing it here would grab the audio from other apps for a song that
@@ -171,11 +175,12 @@ final class EngineBackend: PlaybackBackend {
         if wasPlaying { play() }
     }
 
+    /// Fully stopped (not paused), so nothing of this song is left in the engine for later.
     func stop() {
         stopNode()
         file = nil
         lastTime = 0
-        engine.pause()
+        engine.stop()
     }
 
     // MARK: Graph

@@ -72,37 +72,12 @@ struct PlaylistsListContent: View {
                         }
                     }
             }
-
-            VStack(alignment: .leading, spacing: 0) {
-                importButton("Import from Spotify…", systemImage: ImportSource.spotify.systemImage) {
-                    router.importPlaylist(from: .spotify)
-                }
-                importButton("Import from Apple Music…", systemImage: ImportSource.appleMusic.systemImage) {
-                    router.importPlaylist(from: .appleMusic)
-                }
-                importButton("Import from YouTube Music…", systemImage: ImportSource.youTubeMusic.systemImage) {
-                    router.importPlaylist(from: .youTubeMusic)
-                }
-                importButton("Import .m3u Playlist…", systemImage: "square.and.arrow.down") {
-                    router.importPlaylist()
-                }
-            }
-            .padding(.vertical, 8)
         }
         .padding(.bottom, 24)
         .alert("New Playlist", isPresented: $naming) {
             TextField("Name", text: $newName)
             Button("Cancel", role: .cancel) {}
             Button("Create") { playlists.create(named: newName) }
-        }
-    }
-
-    private func importButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.subheadline)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
         }
     }
 

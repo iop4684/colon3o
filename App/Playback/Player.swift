@@ -536,7 +536,12 @@ final class Player: ObservableObject {
         advanceWhenAutoplayReady = false
         let session = AVAudioSession.sharedInstance()
         // The background keeper may have switched the session to mix-with-others; take it back.
-        try? session.setCategory(.playback, mode: .default, policy: .longFormAudio)
+        // Only when it did: setting the category is a round trip to the audio server, and it ran
+        // on every song change.
+        if session.category != .playback || session.mode != .default
+            || session.routeSharingPolicy != .longFormAudio || !session.categoryOptions.isEmpty {
+            try? session.setCategory(.playback, mode: .default, policy: .longFormAudio)
+        }
         try? session.setActive(true)
         backend.play()
         isPlaying = backend.isPlaying || backend === avPlayer
@@ -631,8 +636,12 @@ final class Player: ObservableObject {
 
     private func loadCurrent(autoplay: Bool) {
         guard let track = current else { return }
-        backend?.stop()
 
+        // The new file goes straight into the backend that's already playing: the engine keeps
+        // running and only its player node swaps files, so a song change is a clean cut. (Stopping
+        // and restarting the engine on every change left a few milliseconds of the old song in
+        // its buffers, heard as a stutter before the new one started, and took longer.) Only a
+        // switch to the other backend stops the old one.
         var chosen: PlaybackBackend = track.isSpatial ? avPlayer : engine
         do {
             try chosen.load(track.url)
@@ -642,6 +651,7 @@ final class Player: ObservableObject {
             chosen = avPlayer
             try? chosen.load(track.url)
         }
+        if let previous = backend, previous !== chosen { previous.stop() }
         backend = chosen
         isSpatialPlayback = chosen === avPlayer
         clock.position = 0
@@ -650,7 +660,8 @@ final class Player: ObservableObject {
         startedAt = Date()
         scrobbled = false
         countedPlay = false
-        artwork = nil
+        // The old cover stays until the new one is loaded (reloadArtwork, below), so the player
+        // and its background don't flash empty between songs.
         advanceWhenAutoplayReady = false
         notePlayed(track)
         refreshOutputInfo()
