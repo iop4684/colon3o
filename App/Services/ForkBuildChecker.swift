@@ -65,8 +65,9 @@ final class ForkBuildChecker: ObservableObject {
                                 : "GitHub answered \(status).")
                 return
             }
+            // Each build is published as the branch's "-latest" release, with colon3o.ipa attached.
             guard let run = try JSONDecoder().decode(Response.self, from: data).workflow_runs.first,
-                  let runURL = URL(string: run.html_url) else {
+                  let runURL = URL(string: "https://github.com/\(Self.owner)/\(Self.repo)/releases/download/\(branch)-latest/colon3o.ipa") else {
                 state = .failed("No \(branch) build of this fork yet.")
                 return
             }
@@ -82,7 +83,7 @@ final class ForkBuildChecker: ObservableObject {
         }
     }
 
-    /// The build's run page on GitHub, where the IPA is under Artifacts (needs a GitHub sign-in).
+    /// Downloads the build's colon3o.ipa straight from its release (no GitHub sign-in needed).
     func open(_ build: Build) {
         UIApplication.shared.open(build.url)
     }

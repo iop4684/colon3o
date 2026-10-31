@@ -531,7 +531,7 @@ struct ForkBuildSection: View {
         } header: {
             Text("This Fork")
         } footer: {
-            Text("Follows the newest successful build of colon3o's \(fork.branch) branch. Get Build opens its run on GitHub; the IPA is under Artifacts (sign in to GitHub to download), ready for SideStore or any signer.")
+            Text("Follows the newest build of colon3o's \(fork.branch) branch. Get Build downloads its colon3o.ipa straight from the \(fork.branch)-latest release on GitHub, ready for LiveContainer, SideStore or any signer.")
         }
         .task { await fork.check() }
     }
@@ -565,7 +565,7 @@ struct ForkBuildSection: View {
             Button {
                 fork.open(build)
             } label: {
-                Text("Get Build on GitHub")
+                Text("Download Build")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }

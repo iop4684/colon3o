@@ -202,7 +202,8 @@ struct LyricsView: View {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
                 if dragStart == nil { dragStart = dragOffset }
-                dragOffset = Self.rubberBand((dragStart ?? 0) + value.translation.height, limits: limits)
+                // Hard stop at the first and last lines: no stretching past them.
+                dragOffset = min(max((dragStart ?? 0) + value.translation.height, limits.lowerBound), limits.upperBound)
                 if !browsing { withAnimation(.easeOut(duration: 0.25)) { browsing = true } }
                 browseEnd?.cancel()
             }
@@ -224,13 +225,6 @@ struct LyricsView: View {
             }
     }
 
-    /// Past the first or last line the column still follows your finger, but only a third as
-    /// far, like the edge of any iOS list.
-    private static func rubberBand(_ offset: CGFloat, limits: ClosedRange<CGFloat>) -> CGFloat {
-        if offset > limits.upperBound { return limits.upperBound + (offset - limits.upperBound) / 3 }
-        if offset < limits.lowerBound { return limits.lowerBound + (offset - limits.lowerBound) / 3 }
-        return offset
-    }
 
     private func plain(_ lines: [String]) -> some View {
         ScrollView(showsIndicators: false) {

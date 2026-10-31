@@ -1,17 +1,18 @@
 name: CI/CD
 
-# Every push and PR: protocol tests on Linux, then an unsigned IPA from macOS.
-# Pushes to main: also sign with the distribution cert (if the secrets are set)
-#   and publish an over-the-air install page on GitHub Pages.
-# Tags v*: also attach the unsigned IPA to a GitHub Release, then rebuild main so the Pages
-#   site's AltStore / SideStore source (altstore.json) lists it.
+# colon3o's build. Every push to main or beta: protocol tests on Linux, then an unsigned IPA from
+# macOS, published as a GitHub Release named "<branch>-latest" (a pre-release for beta) that's
+# replaced on every build. Download colon3o.ipa straight from the release, or give LiveContainer /
+# SideStore its link:
+#   https://github.com/iop4684/colon3o/releases/download/beta-latest/colon3o.ipa
+#
+# Left out from the original colon3 workflow, since this fork has no use for them: signing with a
+# distribution certificate, the over-the-air install page and AltStore source on GitHub Pages,
+# Discord's SDK (fetched from a private repository) and the Google Drive client ID.
 
 on:
   push:
-    # main → the stable install page; beta → a separate beta page at /beta/.
     branches: [main, beta]
-    tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -20,10 +21,6 @@ concurrency:
 
 permissions:
   contents: read
-
-env:
-  # Pinned so signing doesn't change underneath us; bump deliberately.
-  ZSIGN_COMMIT: 614caa8d1ca949e260e5746144aa52d27a4b08d6
 
 jobs:
   test:
@@ -38,29 +35,20 @@ jobs:
         run: swift test --package-path Packages/SoulseekKit
 
   build:
-    name: Build unsigned IPA
+    name: Build and publish IPA
     needs: test
     runs-on: macos-15
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      build: ${{ steps.version.outputs.build }}
-      channel: ${{ steps.version.outputs.channel }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Work out version numbers
         id: version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          else
-            version="$(sed -nE 's/^ *MARKETING_VERSION: *"?([^"]+)"?.*/\1/p' project.yml | head -1)"
-          fi
-          # Beta branch and tags like v0.4.0-beta.1 build the beta channel.
+          version="$(sed -nE 's/^ *MARKETING_VERSION: *"?([^"]+)"?.*/\1/p' project.yml | head -1)"
           channel=stable
-          if [[ "$GITHUB_REF" == refs/heads/beta || "$version" == *-* ]]; then channel=beta; fi
-          # iOS wants plain numbers here: v0.4.0-beta.1 → 0.4.0.
-          version="${version%%-*}"
+          if [[ "$GITHUB_REF" == refs/heads/beta ]]; then channel=beta; fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
@@ -73,36 +61,14 @@ jobs:
           if [ -n "$latest" ]; then sudo xcode-select -s "$latest/Contents/Developer"; fi
           xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Fetch Discord Social SDK
-        # Optional: only with the private SDK repository set up (see README). Pull requests from
-        # forks get no secrets and build without Discord.
-        env:
-          DISCORD_SDK_REPO: ${{ vars.DISCORD_SDK_REPO }}
-          DISCORD_SDK_TOKEN: ${{ secrets.DISCORD_SDK_TOKEN }}
-        run: scripts/fetch-discord-sdk.sh
-
       - name: Generate project
         run: |
-          if [ -d Vendor/discord_partner_sdk.xcframework ]; then
-            echo "Building with Discord Rich Presence"
-            xcodegen generate --spec project-discord.yml
-          else
-            xcodegen generate
-          fi
+          brew install xcodegen
+          xcodegen generate
 
       - name: Build
-        env:
-          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
-          DISCORD_APP_ID: ${{ vars.DISCORD_APP_ID }}
         run: |
           set -o pipefail
-          # Google Drive backups need the iOS OAuth client ID (a repository variable; not secret).
-          extra=()
-          if [ -n "$GOOGLE_CLIENT_ID" ]; then extra+=("COLON3_GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID"); fi
-          if [ -n "$DISCORD_APP_ID" ]; then extra+=("COLON3_DISCORD_APP_ID=$DISCORD_APP_ID"); fi
           xcodebuild build \
             -project colon3.xcodeproj \
             -scheme colon3 \
@@ -116,10 +82,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            ${extra[@]+"${extra[@]}"} \
             | tee xcodebuild.log | grep -E "error:|warning:|BUILD (SUCCEEDED|FAILED)" || true
-          # The executable, not just the folder: a failed build can leave an empty colon3.app.
-          test -f build/Build/Products/Release-iphoneos/colon3.app/colon3
+          test -d build/Build/Products/Release-iphoneos/colon3.app
 
       - name: Package IPA
         run: |
@@ -127,11 +91,31 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/colon3.app Payload/
           zip -qry colon3o.ipa Payload
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: colon3o-unsigned
-          path: colon3o.ipa
-          retention-days: 30
+      - name: Publish as the branch's latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+        run: |
+          tag="${GITHUB_REF_NAME}-latest"
+          # The commit message comes from git, not the event payload, so it never becomes shell code.
+          message="$(git log -1 --format=%s)"
+          notes="Build $BUILD of colon3o $VERSION ($CHANNEL), from ${GITHUB_SHA:0:7}: $message
+
+          Install: download colon3o.ipa below, or give LiveContainer / SideStore this link:
+          https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/colon3o.ipa"
+          args=()
+          if [ "$CHANNEL" = beta ]; then args+=(--prerelease); fi
+          # Replace the previous build: one release per branch, always the newest.
+          gh release delete "$tag" --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+          gh release create "$tag" colon3o.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "colon3o $VERSION $CHANNEL (build $BUILD)" \
+            --notes "$notes" \
+            "${args[@]}"
+          echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep build log on failure
         if: failure()
@@ -139,192 +123,3 @@ jobs:
         with:
           name: xcodebuild-log
           path: xcodebuild.log
-
-  sign:
-    name: Sign and stage install page
-    needs: build
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta')
-    runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
-    env:
-      SIGNING_P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
-      SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
-      SIGNING_PROFILE_BASE64: ${{ secrets.SIGNING_PROFILE_BASE64 }}
-      SIGN_BUNDLE_ID: ${{ vars.SIGN_BUNDLE_ID }}
-    steps:
-      - name: Check signing secrets
-        id: check
-        run: |
-          if [ -n "$SIGNING_P12_BASE64" ] && [ -n "$SIGNING_PROFILE_BASE64" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Signing secrets not set; skipping signing and the install page. See README › CI/CD."
-          fi
-
-      - uses: actions/checkout@v4
-        if: steps.check.outputs.enabled == 'true'
-
-      - uses: actions/download-artifact@v4
-        if: steps.check.outputs.enabled == 'true'
-        with:
-          name: colon3o-unsigned
-          path: dist
-
-      - name: Cache zsign
-        id: zsign-cache
-        if: steps.check.outputs.enabled == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/zsign-bin
-          key: zsign-${{ runner.os }}-${{ env.ZSIGN_COMMIT }}
-
-      - name: Build zsign
-        if: steps.check.outputs.enabled == 'true' && steps.zsign-cache.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq g++ pkg-config libssl-dev
-          git init -q zsign && cd zsign
-          git fetch -q --depth 1 https://github.com/zhlynn/zsign.git "$ZSIGN_COMMIT"
-          git checkout -q FETCH_HEAD
-          cd build/linux && make clean >/dev/null && make
-          mkdir -p ~/zsign-bin && cp ../../bin/zsign ~/zsign-bin/
-
-      - name: Decode certificate and profile
-        if: steps.check.outputs.enabled == 'true'
-        run: |
-          umask 077
-          echo "$SIGNING_P12_BASE64" | base64 -d > "$RUNNER_TEMP/cert.p12"
-          echo "$SIGNING_PROFILE_BASE64" | base64 -d > "$RUNNER_TEMP/profile.mobileprovision"
-
-      - name: Check certificate (revocation)
-        if: steps.check.outputs.enabled == 'true'
-        continue-on-error: true
-        run: |
-          {
-            echo '### Signing certificate'
-            echo '```'
-            ~/zsign-bin/zsign -C "$RUNNER_TEMP/cert.p12" -p "$SIGNING_P12_PASSWORD" 2>&1 || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Sign
-        if: steps.check.outputs.enabled == 'true'
-        run: |
-          args=(-k "$RUNNER_TEMP/cert.p12" -p "$SIGNING_P12_PASSWORD" -m "$RUNNER_TEMP/profile.mobileprovision" -o colon3-signed.ipa)
-          if [ -n "$SIGN_BUNDLE_ID" ]; then args+=(-b "$SIGN_BUNDLE_ID"); fi
-          ~/zsign-bin/zsign "${args[@]}" dist/colon3o.ipa
-          test -s colon3-signed.ipa
-
-      - name: Configure Pages
-        id: pages
-        if: steps.check.outputs.enabled == 'true'
-        uses: actions/configure-pages@v5
-
-      - name: Build install page
-        if: steps.check.outputs.enabled == 'true'
-        env:
-          BASE: ${{ steps.pages.outputs.base_url }}
-          CHANNEL: ${{ needs.build.outputs.channel }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Pages hosts one site, so each deploy carries both channels: this build's files, plus
-          # the other channel's current files copied from the live site.
-          if [ "$CHANNEL" = beta ]; then mine=beta/; other=""; else mine=""; other=beta/; fi
-          files="index.html manifest.plist version.json colon3.ipa"
-          mkdir -p "site/$other"
-          for f in $files; do
-            curl -fsSL "$BASE/$other$f" -o "site/$other$f" || rm -f "site/$other$f"
-          done
-          # Notes: this version's CHANGELOG section, else the commit message (read from git, not
-          # the event payload, so it never becomes shell code).
-          notes="$(scripts/changelog-section.sh "${{ needs.build.outputs.version }}")"
-          if [ -z "$notes" ]; then notes="$(git log -1 --format=%B)"; fi
-          python3 scripts/make-ota-site.py colon3-signed.ipa \
-            --base-url "$BASE/${mine%/}" \
-            --out "site/$mine" \
-            --channel "$CHANNEL" \
-            --commit "$GITHUB_SHA" \
-            --notes "$notes"
-          echo "Install page ($CHANNEL): $BASE/$mine" >> "$GITHUB_STEP_SUMMARY"
-          # Static pages at the site root, like the privacy policy Google's consent screen links to.
-          cp pages/*.html site/
-          # AltStore / SideStore source for the stable releases (README › AltStore and SideStore).
-          # Starts from the live copy, so a failed update keeps the old one instead of none.
-          cp App/Assets.xcassets/AppIcon.appiconset/AppIcon.png site/icon.png
-          curl -fsSL "$BASE/altstore.json" -o site/altstore.json || rm -f site/altstore.json
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" > "$RUNNER_TEMP/releases.json" || true
-          # --previous: releases it already lists aren't downloaded again (that would add to the
-          # download counter on every deploy).
-          python3 scripts/make-altstore-source.py --releases "$RUNNER_TEMP/releases.json" \
-            --base-url "$BASE" --ipa-dir "$RUNNER_TEMP/ipas" --previous site/altstore.json \
-            --out "$RUNNER_TEMP/altstore.json" \
-            && cp "$RUNNER_TEMP/altstore.json" site/altstore.json \
-            || echo "::warning::AltStore source not updated; keeping the previous one."
-
-      - uses: actions/upload-pages-artifact@v3
-        if: steps.check.outputs.enabled == 'true'
-        with:
-          path: site
-
-      - name: Remove secrets from disk
-        if: always()
-        run: rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/profile.mobileprovision"
-
-  deploy:
-    name: Deploy install page
-    needs: sign
-    if: needs.sign.outputs.enabled == 'true'
-    runs-on: ubuntu-latest
-    # main and beta deploy one after the other, never at once.
-    concurrency:
-      group: pages-deploy
-      cancel-in-progress: false
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-
-  release:
-    name: GitHub Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      # To rebuild main's Pages site afterwards, which regenerates the AltStore source.
-      actions: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: colon3o-unsigned
-          path: dist
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          file="dist/colon3o-${GITHUB_REF_NAME#v}-unsigned.ipa"
-          mv dist/colon3o.ipa "$file"
-          args=()
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then args+=(--prerelease); fi
-          # Use the CHANGELOG section when there is one, otherwise GitHub's generated notes.
-          scripts/changelog-section.sh "${{ needs.build.outputs.version }}" > notes.md
-          if [ -s notes.md ]; then args+=(--notes-file notes.md); else args+=(--generate-notes); fi
-          gh release create "$GITHUB_REF_NAME" "$file" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "colon3 ${GITHUB_REF_NAME#v}" \
-            "${args[@]}"
-
-      - name: Update the AltStore source
-        # The source is built with the Pages site; a release made with this job's token doesn't
-        # start other workflows, so ask for a main build. Stable releases only.
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run build.yml --ref main --repo "$GITHUB_REPOSITORY"
