@@ -135,6 +135,10 @@ final class SoulseekModel: ObservableObject {
     private var flushScheduled = false
     private var started = false
     private var coverRequested = Set<String>()
+    /// Album tags for missing songs being downloaded into an album ("username\npath" → tag → value),
+    /// written into each file when it finishes so it joins that album, even when the peer tagged
+    /// it differently or the album was renamed with Edit Info.
+    private var albumTagsForDownloads = UserDefaults.standard.dictionary(forKey: "missing.albumTags") as? [String: [String: String]] ?? [:]
 
     init(library: LibraryStore) {
         self.library = library
@@ -332,7 +336,60 @@ final class SoulseekModel: ObservableObject {
 
     /// Downloads a missing song straight into the album's existing folder.
     func downloadMissing(_ file: SharedFile, from username: String, into album: Album) {
+        let tags = Self.albumTags(of: album)
+        if !tags.isEmpty, TagWriter.canEdit(URL(fileURLWithPath: file.filename)) {
+            albumTagsForDownloads[username + "\n" + file.path] = Dictionary(uniqueKeysWithValues: tags.map { ($0.key.rawValue, $0.value) })
+            UserDefaults.standard.set(albumTagsForDownloads, forKey: "missing.albumTags")
+        }
         client.download(username: username, file: file, folderName: album.folder.lastPathComponent)
+    }
+
+    /// The tags that decide which album a song lands in, as the album's songs have them. An empty
+    /// value means none of them has that tag, so the new song shouldn't either.
+    static func albumTags(of album: Album) -> TagChanges {
+        var tags: TagChanges = [:]
+        let titles = Set(album.tracks.map { $0.album ?? "" })
+        if titles.count == 1, let title = titles.first { tags[.album] = title }
+        let artists = Set(album.tracks.map { $0.albumArtist ?? "" })
+        if artists.count == 1, let artist = artists.first { tags[.albumArtist] = artist }
+        let years = Set(album.tracks.compactMap(\.year))
+        if years.count == 1, let year = years.first { tags[.year] = String(year) }
+        return tags
+    }
+
+    private func takeAlbumTags(for id: DownloadID) -> TagChanges? {
+        guard let stored = albumTagsForDownloads.removeValue(forKey: id.username + "\n" + id.path) else { return nil }
+        UserDefaults.standard.set(albumTagsForDownloads, forKey: "missing.albumTags")
+        var tags: TagChanges = [:]
+        for (key, value) in stored { if let field = TagField(rawValue: key) { tags[field] = value } }
+        return tags
+    }
+
+    /// Writes the album's tags into a finished missing song, then rescans.
+    private func applyAlbumTags(_ tags: TagChanges, to url: URL) {
+        let library = self.library
+        Task {
+            let info = await MetadataReader.read(url: url)
+            let changed = tags.filter { field, value in
+                switch field {
+                case .album: return (info.album ?? "") != value
+                case .albumArtist: return (info.albumArtist ?? "") != value
+                case .year: return info.year.map(String.init) != value && !value.isEmpty
+                default: return false
+                }
+            }
+            if !changed.isEmpty {
+                do {
+                    try await TagWriter.write(changed, to: url)
+                    // TagWriter keeps a file's date, but this song is new: a fresh date also makes a
+                    // scan that already saw the file read its tags again.
+                    try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+                } catch {
+                    Diagnostics.shared.log("Couldn't tag \(url.lastPathComponent) for its album: \(error.localizedDescription)", category: "library")
+                }
+            }
+            library.rescan()
+        }
     }
 
     static func bestCover(_ images: [SharedFile]) -> SharedFile? {
@@ -473,6 +530,8 @@ final class SoulseekModel: ObservableObject {
                         await ArtworkStore.shared.invalidateFolders()
                         library.bumpArtwork()
                     }
+                } else if case let .completed(url) = update.state, let tags = takeAlbumTags(for: update.id) {
+                    applyAlbumTags(tags, to: url)
                 } else {
                     library.rescan()
                 }

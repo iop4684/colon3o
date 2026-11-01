@@ -13,6 +13,7 @@ struct SettingsView: View {
     @EnvironmentObject private var backup: BackupService
     @EnvironmentObject private var updates: UpdateChecker
     @EnvironmentObject private var discord: DiscordPresence
+    @AppStorage(StorageView.lastTotalKey) private var storageTotal: Double = 0
 
     var body: some View {
         NavigationStack {
@@ -41,6 +42,10 @@ struct SettingsView: View {
                     NavigationLink { LibrarySettings() } label: {
                         SettingsRow("Library", icon: "music.note.house.fill", color: .pink,
                                     value: "\(library.tracks.count) songs")
+                    }
+                    NavigationLink { StorageView() } label: {
+                        SettingsRow("Storage", icon: "internaldrive.fill", color: .gray,
+                                    value: storageTotal > 0 ? StorageView.format(Int64(storageTotal)) : nil)
                     }
                 }
 

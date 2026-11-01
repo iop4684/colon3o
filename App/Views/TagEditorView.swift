@@ -34,6 +34,7 @@ struct TagEditorView: View {
 
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var player: Player
+    @EnvironmentObject private var completeness: AlbumCompletenessStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var values: [TagField: String] = [:]
@@ -154,6 +155,12 @@ struct TagEditorView: View {
         let files = editable
         saving = true
         failure = nil
+        // A new album name or album artist gives the album a new id; carry its tracklist over.
+        if changes[.album] != nil || changes[.albumArtist] != nil {
+            for album in Set(files.compactMap { library.album(containing: $0) }) {
+                completeness.albumWillChange(album, editing: files)
+            }
+        }
         Task {
             var failed: [(Track, Error)] = []
             for track in files {

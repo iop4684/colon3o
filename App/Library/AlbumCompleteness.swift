@@ -36,8 +36,34 @@ final class AlbumCompletenessStore: ObservableObject {
 
     private let listings = FolderListingStore()
 
+    /// Song → the id its album had before Edit Info renamed it. An album's id comes from its
+    /// name, so a renamed album would otherwise lose its tracklist and search MusicBrainz again
+    /// under the new name (often finding nothing).
+    private var renamedFrom: [String: String]
+
     init() {
         hiddenAlbums = Set(UserDefaults.standard.stringArray(forKey: "missing.hiddenAlbums") ?? [])
+        renamedFrom = UserDefaults.standard.dictionary(forKey: "missing.renamedFrom") as? [String: String] ?? [:]
+    }
+
+    /// Call before Edit Info writes `tracks`. When they're a whole album, its tracklist and
+    /// Hide Missing choice follow it to its new name.
+    func albumWillChange(_ album: Album, editing tracks: [Track]) {
+        guard Set(tracks.map(\.id)).isSuperset(of: album.tracks.map(\.id)) else { return }
+        for track in album.tracks { renamedFrom[track.id] = renamedFrom[track.id] ?? album.id }
+        UserDefaults.standard.set(renamedFrom, forKey: "missing.renamedFrom")
+    }
+
+    /// Earlier ids of this album, from Edit Info renames not yet carried over.
+    private func previousIDs(of album: Album) -> [String] {
+        var seen = Set<String>()
+        return album.tracks.compactMap { renamedFrom[$0.id] }.filter { $0 != album.id && seen.insert($0).inserted }
+    }
+
+    private func forgetRename(of album: Album) {
+        var changed = false
+        for track in album.tracks where renamedFrom.removeValue(forKey: track.id) != nil { changed = true }
+        if changed { UserDefaults.standard.set(renamedFrom, forKey: "missing.renamedFrom") }
     }
 
     static var isEnabled: Bool { UserDefaults.standard.object(forKey: AppSettings.showMissingKey) as? Bool ?? true }
@@ -63,10 +89,15 @@ final class AlbumCompletenessStore: ObservableObject {
         if !force, let existing = results[album.id], existing.localCount == album.tracks.count { return }
         loading.insert(album.id)
 
+        // Renamed with Edit Info: keep the old name's Hide Missing choice.
+        let previous = previousIDs(of: album)
+        if previous.contains(where: hiddenAlbums.contains), !hiddenAlbums.contains(album.id) { setHidden(album, true) }
+
         // 1. The Soulseek folder it was downloaded from: exact and offline.
         if let listing = listings.listing(forLocalFolder: album.folder.lastPathComponent) {
             results[album.id] = Self.compare(album, expected: listing.expectedTracks(), source: "From \(listing.username)'s folder")
             loading.remove(album.id)
+            forgetRename(of: album)
             return
         }
 
@@ -78,10 +109,12 @@ final class AlbumCompletenessStore: ObservableObject {
         let mbid = album.tracks.compactMap(\.musicBrainzAlbumID).first
         let title = album.title, artist = album.artist, count = album.tracks.count
         Task {
-            let tracklist = await MusicBrainz.shared.tracklist(albumID: album.id, releaseID: mbid,
-                                                               title: title, artist: artist, localCount: count, force: force)
+            let tracklist = await MusicBrainz.shared.tracklist(albumID: album.id, previousIDs: force ? [] : previous,
+                                                               releaseID: mbid, title: title, artist: artist,
+                                                               localCount: count, force: force)
             if let tracklist {
                 self.results[album.id] = Self.compare(album, expected: tracklist.tracks, source: "MusicBrainz: \(tracklist.title)")
+                self.forgetRename(of: album)
             }
             self.loading.remove(album.id)
         }
@@ -226,9 +259,18 @@ actor MusicBrainz {
     }
 
     /// The best-matching release's tracks, or nil if none was found.
-    func tracklist(albumID: String, releaseID: String?, title: String, artist: String, localCount: Int,
-                   force: Bool) async -> (title: String, tracks: [ExpectedTrack])? {
+    func tracklist(albumID: String, previousIDs: [String] = [], releaseID: String?, title: String, artist: String,
+                   localCount: Int, force: Bool) async -> (title: String, tracks: [ExpectedTrack])? {
         let file = directory.appendingPathComponent(albumID + ".json")
+        // Renamed with Edit Info: start from the tracklist found under the old name. (If the old
+        // name found nothing, search again under the new one: fixing the name may be why it changed.)
+        if !FileManager.default.fileExists(atPath: file.path),
+           let old = previousIDs.lazy.map({ self.directory.appendingPathComponent($0 + ".json") }).first(where: {
+               guard let data = try? Data(contentsOf: $0) else { return false }
+               return (try? JSONDecoder().decode(Cached.self, from: data))?.tracklist != nil
+           }) {
+            try? FileManager.default.copyItem(at: old, to: file)
+        }
         if !force, let data = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode(Cached.self, from: data),
            cached.tracklist != nil || Date().timeIntervalSince(cached.fetched) < 7 * 86_400 {
             return cached.tracklist.map { ($0.title, $0.expected()) }
