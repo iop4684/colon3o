@@ -525,6 +525,14 @@ final class Player: ObservableObject {
         UserDefaults.standard.set(recentlyPlayed, forKey: "autoplay.recent")
     }
 
+    /// Picks up edited tags for the songs in the queue (the audio carries on untouched).
+    func refreshTracks(from library: LibraryStore) {
+        func fresh(_ track: Track) -> Track { library.track(id: track.id) ?? track }
+        queue = queue.map(fresh)
+        unshuffledQueue = unshuffledQueue.map(fresh)
+        updateNowPlaying()
+    }
+
     // MARK: Transport
 
     func togglePlayPause() {

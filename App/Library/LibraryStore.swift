@@ -22,6 +22,10 @@ final class LibraryStore: ObservableObject {
 
     private var cache: [String: CachedEntry] = [:]
     private var rescanQueued = false
+    /// Songs whose cached tags must be read again on the next scan (after Edit Info, which keeps
+    /// the file's date, so the cache can't tell on its own).
+    private var staleIDs: Set<String> = []
+    private var scanWaiters: [CheckedContinuation<Void, Never>] = []
     private var albumByTrack: [String: Album] = [:]
     private var tracksByID: [String: Track] = [:]
     private var albumsByID: [String: Album] = [:]
@@ -129,7 +133,9 @@ final class LibraryStore: ObservableObject {
         }
         isScanning = true
         let root = self.root
-        let known = cache
+        var known = cache
+        for id in staleIDs { known[id] = nil }
+        staleIDs = []
 
         Task.detached(priority: .utility) {
             let result = await Self.scan(root: root, cache: known)
@@ -169,6 +175,19 @@ final class LibraryStore: ObservableObject {
 
         if rescanQueued {
             rescanQueued = false
+            rescan()
+        } else {
+            let waiters = scanWaiters
+            scanWaiters = []
+            for waiter in waiters { waiter.resume() }
+        }
+    }
+
+    /// Reads these songs' tags again (after they were edited) and returns once the library shows them.
+    func reread(_ changed: [Track]) async {
+        staleIDs.formUnion(changed.map(\.id))
+        await withCheckedContinuation { continuation in
+            scanWaiters.append(continuation)
             rescan()
         }
     }

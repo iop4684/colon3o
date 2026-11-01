@@ -27,6 +27,9 @@ struct RouterPresenters: ViewModifier {
             .sheet(item: active ? $router.songInfo : .constant(nil)) { track in
                 SongInfoView(track: track)
             }
+            .sheet(item: active ? $router.tagEditing : .constant(nil)) { target in
+                TagEditorView(target: target)
+            }
             .fileImporter(isPresented: active ? $router.showImporter : .constant(false),
                           allowedContentTypes: router.importKind.types,
                           allowsMultipleSelection: router.importKind.allowsMultiple) { result in

@@ -90,6 +90,8 @@ final class AppRouter: ObservableObject {
     @Published var backupRestore: BackupRestoreRequest?
     /// Song Info, from a song's long-press menu.
     @Published var songInfo: Track?
+    /// Edit Info, for a song or a whole album.
+    @Published var tagEditing: TagEditTarget?
 
     init() {
         // The Home tab is hidden in this fork; a saved Home selection opens Library instead.

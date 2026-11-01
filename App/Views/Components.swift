@@ -240,11 +240,23 @@ struct TrackMenuItems: View {
                     : Label("Favorite", systemImage: "star")
             }
         }
+        if let album {
+            Button {
+                router.tagEditing = .album(album)
+            } label: {
+                Label("Edit Album Info…", systemImage: "pencil")
+            }
+        }
         if tracks.count == 1, let track = tracks.first {
             Button {
                 router.songInfo = track
             } label: {
                 Label("Song Info", systemImage: "info.circle")
+            }
+            Button {
+                router.tagEditing = .track(track)
+            } label: {
+                Label("Edit Info…", systemImage: "pencil")
             }
             ShareLink(item: track.url) {
                 Label("Share File", systemImage: "square.and.arrow.up")

@@ -5,10 +5,17 @@ import SwiftUI
 /// Song Info, from a song's long-press menu: what the file actually is (read from the file on the
 /// phone), its tags, and where it's kept.
 struct SongInfoView: View {
-    let track: Track
+    /// The song as it was when opened; `track` follows edits made from here.
+    let opened: Track
 
+    @EnvironmentObject private var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     @State private var details: AudioDetails?
+    @State private var editing = false
+
+    init(track: Track) { opened = track }
+
+    private var track: Track { library.track(id: opened.id) ?? opened }
 
     var body: some View {
         NavigationStack {
@@ -41,8 +48,12 @@ struct SongInfoView: View {
             .navigationTitle("Song Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if TagWriter.canEdit(track.url) {
+                    ToolbarItem(placement: .topBarLeading) { Button("Edit") { editing = true } }
+                }
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+            .sheet(isPresented: $editing) { TagEditorView(target: .track(track)) }
             .task {
                 let url = track.url, duration = track.duration
                 details = await Task.detached(priority: .userInitiated) { await AudioDetails.load(url, duration: duration) }.value

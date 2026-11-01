@@ -15,7 +15,10 @@ struct AlbumDetailView: View {
     @State private var findingTrack: MissingTrack?
 
     /// Re-read after rescans so edits and deletions show up.
-    private var current: Album { library.album(id: album.id) ?? album }
+    /// (An album renamed with Edit Album Info gets a new id; it's found again through its songs.)
+    private var current: Album {
+        library.album(id: album.id) ?? album.tracks.lazy.compactMap { library.album(containing: $0) }.first ?? album
+    }
 
     private enum Row: Identifiable {
         case track(Track, number: Int)
