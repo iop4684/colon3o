@@ -6,12 +6,23 @@ struct SearchView: View {
     @EnvironmentObject private var router: AppRouter
     @State private var query = ""
     @State private var showFilters = false
+    /// A pasted streaming link being looked up, what it turned out to be, or why it failed.
+    @State private var linkLookup: LinkLookup?
+
+    private enum LinkLookup: Equatable {
+        case resolving
+        case found(SongLinkResolver.Resolved)
+        case failed(String)
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 if !soulseek.isLoggedIn {
                     Section { ConnectionBanner() }
+                }
+                if let linkLookup {
+                    Section { linkRow(linkLookup) }
                 }
                 if !soulseek.currentQuery.isEmpty {
                     Section {
@@ -43,13 +54,18 @@ struct SearchView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Search")
-            .searchable(text: $query, prompt: "Artist, album or track")
-            .onSubmit(of: .search) { soulseek.search(query) }
+            .searchable(text: $query, prompt: "Search Soulseek or paste a link")
+            .onSubmit(of: .search) { submit(query) }
+            .onChange(of: query) { old, new in
+                // Pasting a link searches straight away; typed words wait for Search.
+                if new.count - old.count > 8, SongLinkResolver.isLink(new) { submit(new) }
+                if new.isEmpty, linkLookup != nil { linkLookup = nil }
+            }
             .onReceive(router.$pendingSearch) { pending in
                 // colon3://search?q=… from Shortcuts.
                 guard let pending else { return }
                 query = pending
-                soulseek.search(pending)
+                submit(pending)
                 router.pendingSearch = nil
             }
             .navigationDestination(for: String.self) { id in
@@ -70,12 +86,62 @@ struct SearchView: View {
                     .presentationDetents([.medium, .large])
             }
             .overlay {
-                if soulseek.currentQuery.isEmpty && soulseek.isLoggedIn {
+                if soulseek.currentQuery.isEmpty && soulseek.isLoggedIn && linkLookup == nil {
                     EmptyStateView(title: "Search Soulseek",
-                                   message: "Results arrive over about 30 seconds as people answer.",
+                                   message: "Type an artist, album or song, or paste a song or album link from Spotify, Apple Music, YouTube Music, YouTube, Deezer or SoundCloud to find it here.\n\nResults arrive over about 30 seconds as people answer.",
                                    systemImage: "magnifyingglass")
                 }
             }
+        }
+    }
+
+    /// Searches for the words, or for the song a streaming link points to.
+    private func submit(_ text: String) {
+        guard SongLinkResolver.isLink(text) else {
+            linkLookup = nil
+            soulseek.search(text)
+            return
+        }
+        linkLookup = .resolving
+        Task {
+            do {
+                let resolved = try await SongLinkResolver.resolve(text)
+                // The bar shows what's searched, so it can be fixed by hand if the lookup was off.
+                query = resolved.searchText
+                linkLookup = .found(resolved)
+                soulseek.search(resolved.searchText)
+            } catch {
+                linkLookup = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkRow(_ lookup: LinkLookup) -> some View {
+        switch lookup {
+        case .resolving:
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Looking up the link…").foregroundStyle(.secondary)
+            }
+        case let .found(resolved):
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(resolved.kind == .album ? "Album from \(resolved.service)" : "Song from \(resolved.service)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(resolved.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    if !resolved.artist.isEmpty {
+                        Text(resolved.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            } icon: {
+                Image(systemName: "link")
+            }
+        case let .failed(message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .font(.subheadline)
         }
     }
 }
