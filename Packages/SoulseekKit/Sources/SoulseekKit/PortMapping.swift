@@ -289,16 +289,26 @@ public enum MiniHTTP {
     /// nothing more will come (a body without a length ends there).
     public static func parse(_ data: Data, connectionClosed: Bool, limit: Int = 1024 * 1024) throws -> Response? {
         guard data.count <= limit else { throw ParseError.tooLarge }
-        let separator = Data("\r\n\r\n".utf8)
-        guard let headerEnd = data.range(of: separator) else {
-            if connectionClosed { throw ParseError.malformed }
+        // Plain byte arrays with integer offsets: the same behaviour everywhere.
+        let bytes = [UInt8](data)
+        let headerLimit = 64 * 1024
+        guard let headerEnd = find([13, 10, 13, 10], in: bytes, from: 0) else {
+            if connectionClosed || bytes.count > headerLimit { throw ParseError.malformed }
             return nil
         }
-        guard let head = String(data: data[data.startIndex..<headerEnd.lowerBound], encoding: .isoLatin1) else {
-            throw ParseError.malformed
+        guard headerEnd <= headerLimit else { throw ParseError.malformed }
+        // Split into lines on the raw bytes: in a Swift String "\r\n" is one character, so
+        // splitting text on "\n" wouldn't find it.
+        let head = Array(bytes[0..<headerEnd])
+        var lines: [String] = []
+        var lineStart = 0
+        while lineStart <= headerEnd {
+            let lineEnd = find([13, 10], in: head, from: lineStart) ?? headerEnd
+            guard let line = String(bytes: head[lineStart..<lineEnd], encoding: .isoLatin1) else { throw ParseError.malformed }
+            lines.append(line)
+            lineStart = lineEnd + 2
         }
-        let lines = head.components(separatedBy: "\r\n")
-        let statusParts = lines[0].split(separator: " ", maxSplits: 2)
+        let statusParts = (lines.first ?? "").split(separator: " ", maxSplits: 2)
         guard statusParts.count >= 2, statusParts[0].hasPrefix("HTTP/"), let status = Int(statusParts[1]) else {
             throw ParseError.malformed
         }
@@ -308,22 +318,24 @@ public enum MiniHTTP {
             headers[line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()] =
                 line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
-        let rest = data[headerEnd.upperBound...]
+        let rest = Array(bytes[(headerEnd + 4)...])
 
         if headers["transfer-encoding"]?.lowercased().contains("chunked") == true {
-            guard let body = try dechunk(Data(rest)) else {
+            guard let body = try dechunk(rest) else {
                 if connectionClosed { throw ParseError.malformed }
                 return nil
             }
-            return Response(status: status, headers: headers, body: body)
+            return Response(status: status, headers: headers, body: Data(body))
         }
         if let lengthText = headers["content-length"] {
-            guard let length = Int(lengthText), length >= 0, length <= limit else { throw ParseError.malformed }
+            guard lengthText.count <= 9, let length = Int(lengthText), length >= 0, length <= limit else {
+                throw ParseError.malformed
+            }
             guard rest.count >= length else {
                 if connectionClosed { throw ParseError.malformed }
                 return nil
             }
-            return Response(status: status, headers: headers, body: Data(rest.prefix(length)))
+            return Response(status: status, headers: headers, body: Data(rest[0..<length]))
         }
         // No length: the body runs until the connection closes.
         guard connectionClosed else { return nil }
@@ -331,28 +343,33 @@ public enum MiniHTTP {
     }
 
     /// nil while the final zero-length chunk hasn't arrived yet.
-    static func dechunk(_ data: Data) throws -> Data? {
-        var body = Data()
-        var index = data.startIndex
-        let crlf = Data("\r\n".utf8)
+    static func dechunk(_ bytes: [UInt8]) throws -> [UInt8]? {
+        var body: [UInt8] = []
+        var index = 0
         while true {
-            guard index < data.endIndex, let lineEnd = data.range(of: crlf, options: [], in: index..<data.endIndex) else {
-                return nil
-            }
-            guard let sizeLine = String(data: data[index..<lineEnd.lowerBound], encoding: .isoLatin1) else {
-                throw ParseError.malformed
-            }
+            guard let lineEnd = find([13, 10], in: bytes, from: index) else { return nil }
+            guard let sizeLine = String(bytes: bytes[index..<lineEnd], encoding: .isoLatin1) else { throw ParseError.malformed }
             let sizeText = sizeLine.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
             guard sizeText.count <= 8, let size = Int(sizeText, radix: 16), size >= 0 else { throw ParseError.malformed }
             guard body.count + size <= 1024 * 1024 else { throw ParseError.tooLarge }
-            let chunkStart = lineEnd.upperBound
+            let chunkStart = lineEnd + 2
             if size == 0 { return body }
-            guard data.distance(from: chunkStart, to: data.endIndex) >= size + 2 else { return nil }
-            let chunkEnd = data.index(chunkStart, offsetBy: size)
-            body.append(data[chunkStart..<chunkEnd])
-            guard data[chunkEnd..<data.index(chunkEnd, offsetBy: 2)] == crlf else { throw ParseError.malformed }
-            index = data.index(chunkEnd, offsetBy: 2)
+            guard bytes.count - chunkStart >= size + 2 else { return nil }
+            body += bytes[chunkStart..<(chunkStart + size)]
+            guard bytes[chunkStart + size] == 13, bytes[chunkStart + size + 1] == 10 else { throw ParseError.malformed }
+            index = chunkStart + size + 2
         }
+    }
+
+    /// Offset of the first occurrence of `pattern` at or after `start`.
+    static func find(_ pattern: [UInt8], in bytes: [UInt8], from start: Int) -> Int? {
+        guard !pattern.isEmpty, start >= 0, bytes.count - start >= pattern.count else { return nil }
+        var offset = start
+        while offset + pattern.count <= bytes.count {
+            if bytes[offset] == pattern[0], Array(bytes[offset..<(offset + pattern.count)]) == pattern { return offset }
+            offset += 1
+        }
+        return nil
     }
 }
 
