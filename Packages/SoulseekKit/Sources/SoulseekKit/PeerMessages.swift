@@ -160,8 +160,9 @@ public enum PeerMessage: Sendable {
         return ByteWriter.frame(code: code, payload: body)
     }
 
-    /// `body` is a frame body as returned by `FrameBuffer` (code + payload).
-    public static func decode(_ body: Data) throws -> PeerMessage {
+    /// `body` is a frame body as returned by `FrameBuffer` (code + payload). `inflateLimit` caps
+    /// how large a compressed message may unpack to.
+    public static func decode(_ body: Data, inflateLimit: Int = Zlib.defaultLimit) throws -> PeerMessage {
         var reader = ByteReader(body)
         let code = try reader.u32()
         switch code {
@@ -169,7 +170,7 @@ public enum PeerMessage: Sendable {
             return .sharedFileListRequest
 
         case 5:
-            var list = ByteReader(try Zlib.decompress(reader.rest()))
+            var list = ByteReader(try Zlib.decompress(reader.rest(), limit: inflateLimit))
             let folderCount = try list.u32()
             var folders: [SharedFolder] = []
             for _ in 0..<folderCount {
@@ -180,7 +181,7 @@ public enum PeerMessage: Sendable {
             return .sharedFileListResponse(folders: folders)
 
         case 9:
-            var inner = ByteReader(try Zlib.decompress(reader.rest()))
+            var inner = ByteReader(try Zlib.decompress(reader.rest(), limit: inflateLimit))
             let username = try inner.string()
             let token = try inner.u32()
             let files = try inner.fileList()
@@ -203,7 +204,7 @@ public enum PeerMessage: Sendable {
             return .folderContentsRequest(token: token, folder: folder)
 
         case 37:
-            var inner = ByteReader(try Zlib.decompress(reader.rest()))
+            var inner = ByteReader(try Zlib.decompress(reader.rest(), limit: inflateLimit))
             let token = try inner.u32()
             let folder = try inner.string()
             let folderCount = try inner.u32()

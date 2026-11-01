@@ -44,8 +44,9 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         ITSAppUsesNonExemptEncryption: false
         NSSupportsLiveActivities: true
-        # Wi-Fi Transfer serves a page to computers on the same network.
-        NSLocalNetworkUsageDescription: "colon3 uses the local network for Wi-Fi Transfer, so a computer on your Wi-Fi can add or download music."
+        # Wi-Fi Transfer serves a page to computers on the same network; Soulseek asks the router
+        # (NAT-PMP / UPnP) to forward its listening port.
+        NSLocalNetworkUsageDescription: "colon3 uses the local network for Wi-Fi Transfer, so a computer on your Wi-Fi can add or download music, and to ask your router to open its Soulseek port so other users can reach you."
         # Reading playlists from the Music app to import them.
         NSAppleMusicUsageDescription: "colon3 reads your Music library's playlists so it can rebuild them from your own music and Soulseek."
         # colon3://player, colon3://downloads, … from the Dynamic Island, Shortcuts and Back Tap.

@@ -9,8 +9,12 @@ public struct FrameBuffer {
     public static let maxFrameSize = 256 * 1024 * 1024
 
     private var buffer = Data()
+    /// Largest frame this buffer accepts. Connections strangers open to us get a much lower one.
+    public let limit: Int
 
-    public init() {}
+    public init(limit: Int = FrameBuffer.maxFrameSize) {
+        self.limit = limit
+    }
 
     public var bufferedCount: Int { buffer.count }
 
@@ -25,7 +29,7 @@ public struct FrameBuffer {
         for index in 0..<4 {
             length |= Int(buffer[start + index]) << (8 * index)
         }
-        guard length <= FrameBuffer.maxFrameSize else { throw ProtocolError.frameTooLarge(length) }
+        guard length <= limit else { throw ProtocolError.frameTooLarge(length) }
         guard buffer.count >= 4 + length else { return nil }
 
         let body = buffer.subdata(in: (start + 4)..<(start + 4 + length))

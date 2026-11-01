@@ -66,20 +66,35 @@ public struct UploadUpdate: Sendable {
     public let size: UInt64
 }
 
+/// Whether peers can connect to us.
+public enum ListenerStatus: Equatable, Sendable {
+    case off
+    /// `accepted`: connections peers have opened to us since the app started.
+    case listening(port: UInt16, accepted: Int)
+    case failed(String)
+}
+
 public enum ClientEvent: Sendable {
     case state(ClientState)
     case searchResponse(SearchResponse)
     case download(DownloadUpdate)
     case upload(UploadUpdate)
+    case listener(ListenerStatus)
     case log(String)
 }
 
 /// Soulseek client built on Network.framework.
 ///
-/// It never listens for connections (iOS can't usefully do that behind NAT). Instead it relies on
-/// indirect connections: when a peer can't reach us, the server sends us ConnectToPeer and we dial
-/// out with PierceFireWall. Outgoing requests use direct connections, so they only work with peers
-/// that have an open port, which is true of anyone who managed to send us search results.
+/// Like Nicotine+, it listens on a port (2234 by default; the app opens it on the router) and
+/// reaches peers both ways at once: a direct connection, plus a ConnectToPeer request through the
+/// server asking them to connect to us, so whichever side is reachable gets through. When a peer
+/// asks the server to reach us, we dial out with PierceFireWall.
+///
+/// Connections strangers open to us are kept on a short leash: a cap on unidentified connections
+/// (overall and per address) that must say who they are within seconds, small frame and unpack
+/// limits, a memory budget, and idle connections closed. Someone connecting directly can claim any
+/// username, so messages that touch our downloads are only acted on once the server confirms that
+/// user is at that address.
 ///
 /// All state lives on a private serial queue. `onEvent` is always called on the main queue;
 /// set it before calling `connect`.
@@ -113,6 +128,33 @@ public final class SoulseekClient: @unchecked Sendable {
     private var activeUpload: UploadJob?
     private var completedUploads: UInt32 = 0
     private var folderBrowses: [UInt32: FolderBrowse] = [:]
+
+    // Listening (see the Incoming connections section)
+    private var listenPort: UInt16 = 2234
+    private var listener: NWListener?
+    private var listenerReady = false
+    private var listenerRestartScheduled = false
+    private var acceptedConnections = 0
+    private var lastListenerEmit = Date.distantPast
+    private var listenerEmitScheduled = false
+    private var pendingLimiter = ConnectionLimiter(maxTotal: Incoming.maxPending, maxPerAddress: Incoming.maxPendingPerAddress)
+    private var pendingIncoming: [ObjectIdentifier: PendingConnection] = [:]
+    /// P connections peers opened to us (also in `peers` once they're known to be who they say).
+    private var incomingLinks: [ObjectIdentifier: PeerLink] = [:]
+    private var idleSweepScheduled = false
+    /// ConnectToPeer requests we sent, by token, waiting for the peer to connect to us.
+    private var indirectRequests: [UInt32: IndirectRequest] = [:]
+    /// Our uploads' file connections being set up, by transfer token.
+    private var uploadAttempts: [UInt32: UploadAttempt] = [:]
+    /// "username|ip" pairs the server confirmed, so direct connections from them are trusted.
+    private var verifiedPeers: [String: Date] = [:]
+    /// The IP the server last reported for each user.
+    private var lastKnownIPs: [String: String] = [:]
+    /// The connection the message being handled came in on; replies go back over it.
+    private var replyLink: PeerLink?
+    /// Off when the app pauses sharing (away from Wi-Fi); queued requests wait.
+    private var sharingAllowed = true
+    private var lastShareListReply: [String: Date] = [:]
 
     public init(downloadDirectory: URL, incompleteDirectory: URL) {
         self.downloadDirectory = downloadDirectory
@@ -213,6 +255,52 @@ public final class SoulseekClient: @unchecked Sendable {
         }
     }
 
+    /// Listens on `port` for peers (0: don't listen). Applies right away when logged in, otherwise
+    /// at the next login, and becomes the advertised port until `setAdvertisedPort` says otherwise.
+    public func setListenPort(_ port: UInt16) {
+        queue.async {
+            guard port != self.listenPort || (self.isLoggedIn && self.listener == nil) else { return }
+            self.listenPort = port
+            if port != 0 { self.advertisedPort = UInt32(port) }
+            guard self.isLoggedIn else { return }
+            self.stopListener()
+            self.startListener()
+            self.sendServer(.setWaitPort(self.advertisedPort))
+        }
+    }
+
+    /// The port peers should connect to, when the router maps ours to a different outside port.
+    public func setAdvertisedPort(_ port: UInt16) {
+        queue.async {
+            let value = UInt32(port == 0 ? self.listenPort : port)
+            guard value != 0, value != self.advertisedPort else { return }
+            self.advertisedPort = value
+            if self.isLoggedIn { self.sendServer(.setWaitPort(value)) }
+        }
+    }
+
+    /// Whether uploads may run (the app turns this off away from Wi-Fi when asked to). An upload
+    /// in progress stops and the downloader retries later; queued requests wait.
+    public func setSharingAllowed(_ allowed: Bool) {
+        queue.async {
+            guard allowed != self.sharingAllowed else { return }
+            self.sharingAllowed = allowed
+            if allowed {
+                self.startNextUpload()
+            } else if let job = self.activeUpload {
+                let link = self.fileLinks.values.first { link in
+                    if case let .uploading(token) = link.role { return token == job.token }
+                    return false
+                }
+                if let link {
+                    self.closeFile(link, reason: nil)
+                } else {
+                    self.finishUpload(token: job.token, succeeded: false)
+                }
+            }
+        }
+    }
+
     // MARK: - Server connection
 
     private func openServer(username: String, password: String) {
@@ -257,7 +345,15 @@ public final class SoulseekClient: @unchecked Sendable {
         }
         server = nil
 
+        stopListener()
+        emit(.listener(.off))
+        for attempt in uploadAttempts.values {
+            attempt.direct?.stateUpdateHandler = nil
+            attempt.direct?.cancel()
+        }
+        uploadAttempts.removeAll()
         for link in Array(peers.values) { closePeer(link, failed: true) }
+        indirectRequests.removeAll()
         for link in Array(fileLinks.values) { closeFile(link, reason: "Disconnected") }
         for waiters in addressWaiters.values { waiters.forEach { $0(nil) } }
         addressWaiters.removeAll()
@@ -305,6 +401,7 @@ public final class SoulseekClient: @unchecked Sendable {
         case let .loginSucceeded(greeting, ownIP):
             isLoggedIn = true
             log("Logged in (public IP \(ownIP)). \(greeting)")
+            startListener()
             sendServer(.setWaitPort(advertisedPort))
             sendServer(.setStatus(2))
             // We don't take part in the distributed search tree.
@@ -319,6 +416,8 @@ public final class SoulseekClient: @unchecked Sendable {
             tearDown(.failed(Self.describeLoginFailure(reason, detail)))
 
         case let .peerAddress(username, ip, port):
+            if lastKnownIPs.count > 2000 { lastKnownIPs.removeAll() }
+            lastKnownIPs[username] = ip
             let waiters = addressWaiters.removeValue(forKey: username) ?? []
             let address: PeerAddress? = (ip == "0.0.0.0" || port == 0) ? nil : PeerAddress(ip: ip, port: port)
             waiters.forEach { $0(address) }
@@ -336,7 +435,11 @@ public final class SoulseekClient: @unchecked Sendable {
         case .relogged:
             tearDown(.failed("Logged in from somewhere else"))
 
-        case .cantConnectToPeer, .other:
+        case let .cantConnectToPeer(token):
+            // A peer we asked to connect to us couldn't.
+            indirectFailed(token: token)
+
+        case .other:
             break
         }
     }
@@ -386,9 +489,18 @@ public final class SoulseekClient: @unchecked Sendable {
             return
         }
 
+        // Answers to a request go back over the connection it came in on.
+        if let reply = replyLink, reply.username == username, reply.isReady, !reply.isClosed, let connection = reply.connection {
+            frames.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
+            reply.lastActivity = Date()
+            onSent?()
+            return
+        }
+
         if let link = peers[username] {
             if link.isReady, let connection = link.connection {
                 frames.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
+                link.lastActivity = Date()
                 onSent?()
             } else {
                 link.outbox += frames
@@ -412,6 +524,11 @@ public final class SoulseekClient: @unchecked Sendable {
                 return
             }
             self.startPeerConnection(link, address: address, firstFrame: PeerInitMessage.peerInit(username: self.username, type: "P").frame)
+            // At the same time, ask the server to have them connect to us, in case they can't be
+            // reached directly. Whichever connection comes up first is used.
+            if self.listenerReady, !link.isReady, !link.isClosed {
+                link.indirectToken = self.requestIndirect(.peer(link), username: username, type: .peer)
+            }
         }
     }
 
@@ -445,31 +562,57 @@ public final class SoulseekClient: @unchecked Sendable {
             guard let self, let link, !link.isClosed else { return }
             switch state {
             case .ready:
-                connection.send(content: firstFrame, completion: .contentProcessed { _ in })
-                link.isReady = true
-                link.outbox.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
-                link.outbox.removeAll()
-                link.failureHandlers.removeAll()
-                let sent = link.sentHandlers
-                link.sentHandlers.removeAll()
-                sent.forEach { $0() }
-                self.receive(on: connection, onData: { [weak self, weak link] data in
-                    guard let self, let link else { return }
-                    self.handlePeerData(link, data)
-                }, onClose: { [weak self, weak link] _ in
-                    guard let self, let link else { return }
-                    self.closePeer(link, failed: false)
-                })
+                guard !link.isReady, link.connection === connection else {
+                    connection.stateUpdateHandler = nil
+                    connection.cancel()
+                    return
+                }
+                self.activatePeerLink(link, connection: connection, firstFrame: firstFrame)
             case .waiting, .failed:
                 if let pierceToken {
                     self.sendServer(.cantConnectToPeer(token: pierceToken, username: link.username))
+                    self.closePeer(link, failed: true)
+                } else if !link.isReady, link.indirectToken != nil {
+                    // The peer may still connect to us through the server; wait for that.
+                    link.directFailed = true
+                    connection.stateUpdateHandler = nil
+                    connection.cancel()
+                    if link.connection === connection { link.connection = nil }
+                } else {
+                    self.closePeer(link, failed: true)
                 }
-                self.closePeer(link, failed: true)
             default:
                 break
             }
         }
         connection.start(queue: queue)
+    }
+
+    /// A peer connection came up (ours, or theirs answering our request): send what's waiting
+    /// and start reading. `leftover` is data that arrived along with their first message.
+    private func activatePeerLink(_ link: PeerLink, connection: NWConnection, firstFrame: Data?, leftover: Data = Data()) {
+        if let token = link.indirectToken {
+            indirectRequests[token] = nil
+            link.indirectToken = nil
+        }
+        if let firstFrame { connection.send(content: firstFrame, completion: .contentProcessed { _ in }) }
+        link.isReady = true
+        link.lastActivity = Date()
+        link.outbox.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
+        link.outbox.removeAll()
+        link.failureHandlers.removeAll()
+        let sent = link.sentHandlers
+        link.sentHandlers.removeAll()
+        sent.forEach { $0() }
+        if !leftover.isEmpty { handlePeerData(link, leftover) }
+        guard !link.isClosed else { return }
+        receive(on: connection, onData: { [weak self, weak link] data in
+            guard let self, let link else { return }
+            self.handlePeerData(link, data)
+        }, onClose: { [weak self, weak link] _ in
+            guard let self, let link else { return }
+            self.closePeer(link, failed: false)
+        })
     }
 
     private func closePeer(_ link: PeerLink, failed: Bool) {
@@ -478,6 +621,12 @@ public final class SoulseekClient: @unchecked Sendable {
         link.connection?.stateUpdateHandler = nil
         link.connection?.cancel()
         if peers[link.username] === link { peers[link.username] = nil }
+        incomingLinks[ObjectIdentifier(link)] = nil
+        if let token = link.indirectToken {
+            indirectRequests[token] = nil
+            link.indirectToken = nil
+        }
+        link.held.removeAll()
         if failed {
             let handlers = link.failureHandlers
             link.failureHandlers.removeAll()
@@ -486,8 +635,15 @@ public final class SoulseekClient: @unchecked Sendable {
     }
 
     private func handlePeerData(_ link: PeerLink, _ data: Data) {
+        guard !link.isClosed else { return }
         link.frames.append(data)
-        while true {
+        link.lastActivity = Date()
+        if link.incoming, incomingBufferedBytes() > Incoming.bufferedBudget {
+            log("Closed the connection from \(link.username): too much data at once")
+            closePeer(link, failed: false)
+            return
+        }
+        while !link.isClosed {
             let body: Data
             do {
                 guard let next = try link.frames.nextFrame() else { return }
@@ -498,11 +654,34 @@ public final class SoulseekClient: @unchecked Sendable {
                 return
             }
             do {
-                let message = try PeerMessage.decode(body)
-                handlePeerMessage(from: link.username, message)
+                let message = try PeerMessage.decode(body, inflateLimit: link.incoming ? Incoming.inflateLimit : Zlib.defaultLimit)
+                routePeerMessage(link, message)
             } catch {
                 log("Couldn't decode message from \(link.username): \(error)")
             }
+        }
+    }
+
+    /// Hands a message to `handlePeerMessage`, unless it touches our downloads and came over a
+    /// connection from someone the server hasn't vouched for yet; those wait for the check.
+    private func routePeerMessage(_ link: PeerLink, _ message: PeerMessage) {
+        if !link.trusted, Self.needsVerifiedSender(message) {
+            guard link.held.count < Incoming.maxHeldMessages else { return }
+            link.held.append(message)
+            verify(link)
+            return
+        }
+        let previous = replyLink
+        replyLink = link
+        handlePeerMessage(from: link.username, message)
+        replyLink = previous
+    }
+
+    private static func needsVerifiedSender(_ message: PeerMessage) -> Bool {
+        switch message {
+        case let .transferRequest(direction, _, _, _): return direction == .upload
+        case .uploadDenied, .uploadFailed, .placeInQueueResponse: return true
+        default: return false
         }
     }
 
@@ -559,13 +738,20 @@ public final class SoulseekClient: @unchecked Sendable {
             }
 
         case .sharedFileListRequest:
+            // Packing the whole list is the most work a peer can ask of us: once per 20 s each.
+            let now = Date()
+            if let last = lastShareListReply[username], now.timeIntervalSince(last) < 20 { return }
+            if lastShareListReply.count > 500 {
+                lastShareListReply = lastShareListReply.filter { now.timeIntervalSince($0.value) < 20 }
+            }
+            lastShareListReply[username] = now
             sendToPeer(username, [.sharedFileListResponse(folders: sharedFolders())])
 
         case .userInfoRequest:
             sendToPeer(username, [.userInfoResponse(description: "colon3 (iOS)",
                                                     totalUploads: completedUploads,
                                                     queueSize: UInt32(uploadQueue.count),
-                                                    slotsFree: activeUpload == nil)])
+                                                    slotsFree: activeUpload == nil && sharingAllowed)])
 
         case let .placeInQueueRequest(filename):
             if let index = uploadQueue.firstIndex(where: { $0.username == username && $0.path == filename }) {
@@ -843,13 +1029,18 @@ public final class SoulseekClient: @unchecked Sendable {
         }
         if activeUpload?.username == username && activeUpload?.path == path { return }
         if uploadQueue.contains(where: { $0.username == username && $0.path == path }) { return }
+        let fromUser = uploadQueue.lazy.filter { $0.username == username }.count
+        guard fromUser < Incoming.maxQueuedPerUser, uploadQueue.count < Incoming.maxQueuedTotal else {
+            sendToPeer(username, [.uploadDenied(filename: path, reason: "Too many files")])
+            return
+        }
         uploadQueue.append(UploadJob(username: username, path: path, share: share))
         emitUpload(username: username, path: path, state: .queued, sent: 0, size: share.size)
         startNextUpload()
     }
 
     private func startNextUpload() {
-        guard activeUpload == nil, isLoggedIn, !uploadQueue.isEmpty else { return }
+        guard activeUpload == nil, isLoggedIn, sharingAllowed, !uploadQueue.isEmpty else { return }
         var job = uploadQueue.removeFirst()
         job.token = UInt32.random(in: 1..<UInt32.max)
         activeUpload = job
@@ -874,38 +1065,87 @@ public final class SoulseekClient: @unchecked Sendable {
         activeUpload?.started = true
 
         resolveAddress(username) { [weak self] address in
-            guard let self else { return }
-            guard let address, let port = NWEndpoint.Port(rawValue: UInt16(truncatingIfNeeded: address.port)) else {
+            guard let self, self.activeUpload?.token == token, self.uploadAttempts[token] == nil else { return }
+            guard let address else {
                 self.finishUpload(token: token, succeeded: false)
                 return
             }
-            let connection = NWConnection(host: NWEndpoint.Host(address.ip), port: port, using: Self.tcpParameters(timeout: 8))
-            let link = FileLink(username: username, connection: connection, role: .uploading(token))
-            self.fileLinks[ObjectIdentifier(link)] = link
-
-            connection.stateUpdateHandler = { [weak self, weak link] state in
-                guard let self, let link, !link.isClosed else { return }
-                switch state {
-                case .ready:
-                    var writer = ByteWriter()
-                    writer.raw(PeerInitMessage.peerInit(username: self.username, type: "F").frame)
-                    writer.u32(token)  // FileTransferInit
-                    connection.send(content: writer.data, completion: .contentProcessed { _ in })
-                    self.receive(on: connection, onData: { [weak self, weak link] data in
-                        guard let self, let link else { return }
-                        self.handleFileData(link, data)
-                    }, onClose: { [weak self, weak link] _ in
-                        guard let self, let link else { return }
-                        self.closeFile(link, reason: nil)
-                    })
-                case .waiting, .failed:
-                    self.closeFile(link, reason: nil)
-                default:
-                    break
+            // Connect to them directly and, at the same time, ask them through the server to
+            // connect to us; the first file connection that comes up is used.
+            let attempt = UploadAttempt(token: token, username: username)
+            self.uploadAttempts[token] = attempt
+            if address.port > 0, address.port <= 65535, let port = NWEndpoint.Port(rawValue: UInt16(address.port)) {
+                let connection = NWConnection(host: NWEndpoint.Host(address.ip), port: port, using: Self.tcpParameters(timeout: 8))
+                attempt.direct = connection
+                connection.stateUpdateHandler = { [weak self, weak attempt] state in
+                    guard let self, let attempt, attempt.direct === connection, !attempt.claimed else { return }
+                    switch state {
+                    case .ready:
+                        self.claimUpload(attempt, connection: connection, sendPeerInit: true)
+                    case .waiting, .failed:
+                        connection.stateUpdateHandler = nil
+                        connection.cancel()
+                        attempt.direct = nil
+                        attempt.directFailed = true
+                        self.uploadAttemptMaybeFailed(attempt)
+                    default:
+                        break
+                    }
                 }
+                connection.start(queue: self.queue)
+            } else {
+                attempt.directFailed = true
             }
-            connection.start(queue: self.queue)
+            if self.listenerReady {
+                attempt.indirectToken = self.requestIndirect(.upload(token), username: username, type: .file)
+            }
+            self.uploadAttemptMaybeFailed(attempt)
         }
+    }
+
+    /// The file connection for an upload is up (ours, or theirs answering our request).
+    private func claimUpload(_ attempt: UploadAttempt, connection: NWConnection, sendPeerInit: Bool, leftover: Data = Data()) {
+        attempt.claimed = true
+        if let direct = attempt.direct, direct !== connection {
+            direct.stateUpdateHandler = nil
+            direct.cancel()
+        }
+        attempt.direct = nil
+        if let indirect = attempt.indirectToken {
+            indirectRequests[indirect] = nil
+            attempt.indirectToken = nil
+        }
+
+        let link = FileLink(username: attempt.username, connection: connection, role: .uploading(attempt.token))
+        fileLinks[ObjectIdentifier(link)] = link
+        connection.stateUpdateHandler = { [weak self, weak link] state in
+            guard let self, let link, !link.isClosed else { return }
+            switch state {
+            case .waiting, .failed: self.closeFile(link, reason: nil)
+            default: break
+            }
+        }
+        var writer = ByteWriter()
+        if sendPeerInit { writer.raw(PeerInitMessage.peerInit(username: username, type: "F").frame) }
+        writer.u32(attempt.token)  // FileTransferInit
+        connection.send(content: writer.data, completion: .contentProcessed { _ in })
+        if !leftover.isEmpty { handleFileData(link, leftover) }
+        guard !link.isClosed else { return }
+        receive(on: connection, onData: { [weak self, weak link] data in
+            guard let self, let link else { return }
+            self.handleFileData(link, data)
+        }, onClose: { [weak self, weak link] _ in
+            guard let self, let link else { return }
+            self.closeFile(link, reason: nil)
+        })
+    }
+
+    /// Gives up on an upload once neither connection can come up.
+    private func uploadAttemptMaybeFailed(_ attempt: UploadAttempt) {
+        guard !attempt.claimed, attempt.directFailed, attempt.indirectToken == nil,
+              uploadAttempts[attempt.token] === attempt else { return }
+        uploadAttempts[attempt.token] = nil
+        finishUpload(token: attempt.token, succeeded: false)
     }
 
     private func handleUploadOffset(_ link: FileLink, _ data: Data) {
@@ -964,6 +1204,13 @@ public final class SoulseekClient: @unchecked Sendable {
 
     private func finishUpload(token: UInt32, succeeded: Bool) {
         guard let job = activeUpload, job.token == token else { return }
+        if let attempt = uploadAttempts.removeValue(forKey: token) {
+            attempt.direct?.stateUpdateHandler = nil
+            attempt.direct?.cancel()
+            attempt.direct = nil
+            if let indirect = attempt.indirectToken { indirectRequests[indirect] = nil }
+            attempt.indirectToken = nil
+        }
         emitUpload(username: job.username, path: job.path, state: succeeded ? .completed : .failed,
                    sent: succeeded ? job.share.size : 0, size: job.share.size)
         if succeeded {
@@ -988,6 +1235,406 @@ public final class SoulseekClient: @unchecked Sendable {
     private static func splitVirtualPath(_ path: String) -> (folder: String, name: String) {
         guard let separator = path.lastIndex(of: "\\") else { return ("", path) }
         return (String(path[..<separator]), String(path[path.index(after: separator)...]))
+    }
+
+    // MARK: - Incoming connections
+
+    private func startListener() {
+        guard listener == nil else { return }
+        guard listenPort != 0, let port = NWEndpoint.Port(rawValue: listenPort) else {
+            emit(.listener(.off))
+            return
+        }
+        let parameters = Self.tcpParameters(timeout: 8)
+        parameters.allowLocalEndpointReuse = true
+        // Soulseek peers use IPv4, and the router only forwards IPv4: don't accept IPv6.
+        if let ip = parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options { ip.version = .v4 }
+
+        let newListener: NWListener
+        do {
+            newListener = try NWListener(using: parameters, on: port)
+        } catch {
+            emit(.listener(.failed("Can't listen on port \(listenPort): \(error.localizedDescription)")))
+            scheduleListenerRestart()
+            return
+        }
+        listener = newListener
+        newListener.newConnectionHandler = { [weak self] connection in
+            guard let self, self.listener === newListener else {
+                connection.cancel()
+                return
+            }
+            self.acceptIncoming(connection)
+        }
+        newListener.stateUpdateHandler = { [weak self] state in
+            guard let self, self.listener === newListener else { return }
+            switch state {
+            case .ready:
+                self.listenerReady = true
+                self.log("Listening for peers on port \(self.listenPort)")
+                self.lastListenerEmit = .distantPast
+                self.emitListenerStatus()
+            case let .waiting(error):
+                self.listenerReady = false
+                self.emit(.listener(.failed("Waiting for the network (\(error.localizedDescription))")))
+            case let .failed(error):
+                // Also happens after iOS suspended the app for a while; start again shortly.
+                self.listenerReady = false
+                self.emit(.listener(.failed(self.describeListenerError(error))))
+                newListener.stateUpdateHandler = nil
+                newListener.newConnectionHandler = nil
+                newListener.cancel()
+                self.listener = nil
+                self.scheduleListenerRestart()
+            default:
+                break
+            }
+        }
+        newListener.start(queue: queue)
+    }
+
+    private func stopListener() {
+        listenerReady = false
+        if let listener {
+            listener.stateUpdateHandler = nil
+            listener.newConnectionHandler = nil
+            listener.cancel()
+        }
+        listener = nil
+        for pending in Array(pendingIncoming.values) { dropPending(pending) }
+        pendingLimiter.reset()
+        for link in Array(incomingLinks.values) { closePeer(link, failed: false) }
+    }
+
+    private func scheduleListenerRestart() {
+        guard !listenerRestartScheduled else { return }
+        listenerRestartScheduled = true
+        queue.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self else { return }
+            self.listenerRestartScheduled = false
+            if self.isLoggedIn, self.listener == nil { self.startListener() }
+        }
+    }
+
+    private func describeListenerError(_ error: NWError) -> String {
+        if case let .posix(code) = error, code == .EADDRINUSE {
+            return "Port \(listenPort) is in use by another app"
+        }
+        return "Can't listen on port \(listenPort): \(error.localizedDescription)"
+    }
+
+    /// At most once a second, so a burst of connections doesn't flood the app with updates.
+    private func emitListenerStatus() {
+        guard listenerReady else { return }
+        let wait = 1 - Date().timeIntervalSince(lastListenerEmit)
+        if wait <= 0 {
+            lastListenerEmit = Date()
+            emit(.listener(.listening(port: listenPort, accepted: acceptedConnections)))
+        } else if !listenerEmitScheduled {
+            listenerEmitScheduled = true
+            queue.asyncAfter(deadline: .now() + wait) { [weak self] in
+                guard let self else { return }
+                self.listenerEmitScheduled = false
+                self.emitListenerStatus()
+            }
+        }
+    }
+
+    /// A new connection to our port. It gets a few seconds to say who it is (PeerInit or
+    /// PierceFireWall) and only a small first message; too many at once are turned away.
+    private func acceptIncoming(_ connection: NWConnection) {
+        let address = Self.remoteAddress(of: connection)
+        guard pendingLimiter.admit(address) else {
+            connection.cancel()
+            return
+        }
+        let pending = PendingConnection(connection: connection, address: address)
+        pendingIncoming[ObjectIdentifier(pending)] = pending
+        connection.stateUpdateHandler = { [weak self, weak pending] state in
+            guard let self, let pending else { return }
+            switch state {
+            case .failed, .cancelled: self.dropPending(pending)
+            default: break
+            }
+        }
+        connection.start(queue: queue)
+        receiveInit(pending)
+        queue.asyncAfter(deadline: .now() + Incoming.initTimeout) { [weak self, weak pending] in
+            guard let self, let pending else { return }
+            self.dropPending(pending)
+        }
+    }
+
+    private func receiveInit(_ pending: PendingConnection) {
+        pending.connection.receive(minimumIncompleteLength: 1, maximumLength: Incoming.initFrameLimit + 4) {
+            [weak self, weak pending] data, _, isComplete, error in
+            guard let self, let pending, self.pendingIncoming[ObjectIdentifier(pending)] != nil else { return }
+            if let data, !data.isEmpty { pending.frames.append(data) }
+            let body: Data?
+            do {
+                body = try pending.frames.nextFrame()
+            } catch {
+                self.dropPending(pending)
+                return
+            }
+            if let body {
+                self.handleInit(pending, body: body)
+            } else if isComplete || error != nil {
+                self.dropPending(pending)
+            } else {
+                self.receiveInit(pending)
+            }
+        }
+    }
+
+    /// Closes a connection that never said who it is.
+    private func dropPending(_ pending: PendingConnection) {
+        guard pendingIncoming.removeValue(forKey: ObjectIdentifier(pending)) != nil else { return }
+        pendingLimiter.release(pending.address)
+        pending.connection.stateUpdateHandler = nil
+        pending.connection.cancel()
+    }
+
+    /// Takes a connection off the unidentified list so it can be handed to its new role.
+    private func promotePending(_ pending: PendingConnection) -> Bool {
+        guard pendingIncoming.removeValue(forKey: ObjectIdentifier(pending)) != nil else { return false }
+        pendingLimiter.release(pending.address)
+        pending.connection.stateUpdateHandler = nil
+        return true
+    }
+
+    private func handleInit(_ pending: PendingConnection, body: Data) {
+        guard let message = try? PeerInitMessage.decode(body) else {
+            dropPending(pending)
+            return
+        }
+        let leftover = pending.frames.drain()
+        switch message {
+        case let .pierceFirewall(token):
+            // A peer answering one of our ConnectToPeer requests; the token says which.
+            guard let request = indirectRequests.removeValue(forKey: token), promotePending(pending) else {
+                dropPending(pending)
+                return
+            }
+            countAccepted()
+            switch request.target {
+            case let .peer(link):
+                adoptPiercedPeer(link, token: token, connection: pending.connection, leftover: leftover)
+            case let .upload(transferToken):
+                adoptPiercedUpload(transferToken, indirectToken: token, username: request.username,
+                                   connection: pending.connection, leftover: leftover)
+            }
+
+        case let .peerInit(username, type):
+            guard Self.isPlausibleUsername(username) else {
+                dropPending(pending)
+                return
+            }
+            switch type {
+            case ConnectionType.peer.rawValue:
+                guard incomingLinks.count < Incoming.maxPeerLinks, promotePending(pending) else {
+                    dropPending(pending)
+                    return
+                }
+                countAccepted()
+                acceptIncomingPeer(username: username, connection: pending.connection, address: pending.address, leftover: leftover)
+            case ConnectionType.file.rawValue:
+                guard fileLinks.count < Incoming.maxFileLinks, promotePending(pending) else {
+                    dropPending(pending)
+                    return
+                }
+                countAccepted()
+                acceptIncomingFile(username: username, connection: pending.connection, leftover: leftover)
+            default:
+                // Distributed search connections: we don't take part in that network.
+                dropPending(pending)
+            }
+        }
+    }
+
+    private func countAccepted() {
+        acceptedConnections += 1
+        emitListenerStatus()
+    }
+
+    /// A peer opened a P connection to us directly. They can claim any username, so it starts out
+    /// untrusted (see `routePeerMessage`) unless we've already confirmed them at this address.
+    private func acceptIncomingPeer(username: String, connection: NWConnection, address: String, leftover: Data) {
+        let link = PeerLink(username: username)
+        link.connection = connection
+        link.incoming = true
+        link.address = address
+        link.frames = FrameBuffer(limit: Incoming.peerFrameLimit)
+        if let confirmed = verifiedPeers[username + "|" + address], Date().timeIntervalSince(confirmed) < Incoming.verifiedFor {
+            link.trusted = true
+        } else {
+            link.trusted = false
+        }
+        link.isReady = true
+        link.lastActivity = Date()
+        incomingLinks[ObjectIdentifier(link)] = link
+        if link.trusted, peers[username] == nil { peers[username] = link }
+        connection.stateUpdateHandler = { [weak self, weak link] state in
+            guard let self, let link else { return }
+            if case .failed = state { self.closePeer(link, failed: false) }
+        }
+        scheduleIdleSweep()
+        if !leftover.isEmpty { handlePeerData(link, leftover) }
+        guard !link.isClosed else { return }
+        receive(on: connection, onData: { [weak self, weak link] data in
+            guard let self, let link else { return }
+            self.handlePeerData(link, data)
+        }, onClose: { [weak self, weak link] _ in
+            guard let self, let link else { return }
+            self.closePeer(link, failed: false)
+        })
+    }
+
+    /// The peer connected to us for a P connection we asked for. Our own attempt (if still
+    /// trying) is dropped, and queued messages go out over this one.
+    private func adoptPiercedPeer(_ link: PeerLink, token: UInt32, connection: NWConnection, leftover: Data) {
+        guard !link.isClosed, !link.isReady, link.indirectToken == token else {
+            connection.cancel()
+            return
+        }
+        link.indirectToken = nil
+        if let direct = link.connection, direct !== connection {
+            direct.stateUpdateHandler = nil
+            direct.cancel()
+        }
+        link.connection = connection
+        connection.stateUpdateHandler = { [weak self, weak link] state in
+            guard let self, let link else { return }
+            if case .failed = state { self.closePeer(link, failed: false) }
+        }
+        activatePeerLink(link, connection: connection, firstFrame: nil, leftover: leftover)
+    }
+
+    /// The downloader connected to us for the file connection of our upload.
+    private func adoptPiercedUpload(_ transferToken: UInt32, indirectToken: UInt32, username: String,
+                                    connection: NWConnection, leftover: Data) {
+        guard let attempt = uploadAttempts[transferToken], !attempt.claimed, attempt.indirectToken == indirectToken,
+              attempt.username == username, activeUpload?.token == transferToken else {
+            connection.cancel()
+            return
+        }
+        attempt.indirectToken = nil
+        claimUpload(attempt, connection: connection, sendPeerInit: false, leftover: leftover)
+    }
+
+    /// A peer opened a file connection to us to send a file we're downloading. The transfer token
+    /// they send next must match one we agreed to with that user, or it's closed.
+    private func acceptIncomingFile(username: String, connection: NWConnection, leftover: Data) {
+        let link = FileLink(username: username, connection: connection, role: .awaitingToken)
+        fileLinks[ObjectIdentifier(link)] = link
+        connection.stateUpdateHandler = { [weak self, weak link] state in
+            guard let self, let link, !link.isClosed else { return }
+            if case .failed = state { self.closeFile(link, reason: "Connection lost") }
+        }
+        queue.asyncAfter(deadline: .now() + Incoming.initTimeout) { [weak self, weak link] in
+            guard let self, let link, !link.isClosed, case .awaitingToken = link.role else { return }
+            self.closeFile(link, reason: nil)
+        }
+        if !leftover.isEmpty { handleFileData(link, leftover) }
+        guard !link.isClosed else { return }
+        receive(on: connection, onData: { [weak self, weak link] data in
+            guard let self, let link else { return }
+            self.handleFileData(link, data)
+        }, onClose: { [weak self, weak link] _ in
+            guard let self, let link else { return }
+            self.closeFile(link, reason: "Connection closed early")
+        })
+    }
+
+    /// Asks the server to have `username` connect to us. Gives up after a while, or as soon as the
+    /// server says they couldn't.
+    private func requestIndirect(_ target: IndirectTarget, username: String, type: ConnectionType) -> UInt32 {
+        var token = UInt32.random(in: 1..<UInt32.max)
+        while indirectRequests[token] != nil { token = UInt32.random(in: 1..<UInt32.max) }
+        indirectRequests[token] = IndirectRequest(target: target, username: username)
+        sendServer(.connectToPeer(token: token, username: username, type: type))
+        queue.asyncAfter(deadline: .now() + Incoming.indirectTimeout) { [weak self] in
+            self?.indirectFailed(token: token)
+        }
+        return token
+    }
+
+    private func indirectFailed(token: UInt32) {
+        guard let request = indirectRequests.removeValue(forKey: token) else { return }
+        switch request.target {
+        case let .peer(link):
+            guard link.indirectToken == token else { return }
+            link.indirectToken = nil
+            if link.directFailed, !link.isReady { closePeer(link, failed: true) }
+        case let .upload(transferToken):
+            guard let attempt = uploadAttempts[transferToken], attempt.indirectToken == token else { return }
+            attempt.indirectToken = nil
+            uploadAttemptMaybeFailed(attempt)
+        }
+    }
+
+    /// Asks the server where this user is; if it's the address the connection came from, the
+    /// held messages are handled and the connection is trusted from then on.
+    private func verify(_ link: PeerLink) {
+        guard !link.verifying, let address = link.address else { return }
+        link.verifying = true
+        resolveAddress(link.username) { [weak self, weak link] _ in
+            guard let self, let link, !link.isClosed else { return }
+            link.verifying = false
+            let held = link.held
+            link.held.removeAll()
+            // Compare the IP alone: the server reports port 0 for some reachable peers.
+            guard self.lastKnownIPs[link.username] == address else {
+                self.log("Ignored transfer messages from someone claiming to be \(link.username) (\(address))")
+                return
+            }
+            link.trusted = true
+            if self.verifiedPeers.count > 500 {
+                let now = Date()
+                self.verifiedPeers = self.verifiedPeers.filter { now.timeIntervalSince($0.value) < Incoming.verifiedFor }
+            }
+            self.verifiedPeers[link.username + "|" + address] = Date()
+            if self.peers[link.username] == nil { self.peers[link.username] = link }
+            for message in held where !link.isClosed { self.routePeerMessage(link, message) }
+        }
+    }
+
+    /// Closes connections peers opened to us that have gone quiet.
+    private func scheduleIdleSweep() {
+        guard !idleSweepScheduled else { return }
+        idleSweepScheduled = true
+        queue.asyncAfter(deadline: .now() + 60) { [weak self] in
+            guard let self else { return }
+            self.idleSweepScheduled = false
+            let now = Date()
+            for link in Array(self.incomingLinks.values)
+            where now.timeIntervalSince(link.lastActivity) > Incoming.idleTimeout && !link.verifying {
+                self.closePeer(link, failed: false)
+            }
+            if !self.incomingLinks.isEmpty { self.scheduleIdleSweep() }
+        }
+    }
+
+    private func incomingBufferedBytes() -> Int {
+        incomingLinks.values.reduce(0) { $0 + $1.frames.bufferedCount }
+    }
+
+    private static func isPlausibleUsername(_ name: String) -> Bool {
+        !name.isEmpty && name.utf8.count <= 200
+            && !name.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }
+    }
+
+    private static func remoteAddress(of connection: NWConnection) -> String {
+        guard case let .hostPort(host, _) = connection.endpoint else { return "unknown" }
+        var text: String
+        switch host {
+        case let .ipv4(address): text = "\(address)"
+        case let .ipv6(address): text = "\(address)"
+        case let .name(name, _): text = name
+        @unknown default: text = "unknown"
+        }
+        if let percent = text.firstIndex(of: "%") { text = String(text[..<percent]) }
+        return text
     }
 
     // MARK: - Helpers
@@ -1047,6 +1694,19 @@ private final class PeerLink {
     var outbox: [Data] = []
     var sentHandlers: [() -> Void] = []
     var failureHandlers: [() -> Void] = []
+    /// Opened by the peer rather than by us.
+    var incoming = false
+    /// False for a direct connection from someone the server hasn't confirmed yet.
+    var trusted = true
+    /// The remote IP, for connections peers opened to us.
+    var address: String?
+    var directFailed = false
+    /// Our pending ConnectToPeer request for this connection.
+    var indirectToken: UInt32?
+    var lastActivity = Date()
+    var verifying = false
+    /// Messages waiting for `verify`.
+    var held: [PeerMessage] = []
 
     init(username: String) {
         self.username = username
@@ -1091,6 +1751,61 @@ private struct FolderBrowse {
     let username: String
     let folder: String
     let completion: ([SharedFile]?) -> Void
+}
+
+/// Limits for connections peers open to us.
+private enum Incoming {
+    static let maxPending = 24
+    static let maxPendingPerAddress = 4
+    static let initTimeout: TimeInterval = 10
+    static let initFrameLimit = 4096
+    static let maxPeerLinks = 64
+    static let maxFileLinks = 24
+    static let peerFrameLimit = 16 * 1024 * 1024
+    static let inflateLimit = 32 * 1024 * 1024
+    static let bufferedBudget = 48 * 1024 * 1024
+    static let idleTimeout: TimeInterval = 300
+    static let indirectTimeout: TimeInterval = 20
+    static let maxQueuedPerUser = 200
+    static let maxQueuedTotal = 2000
+    static let verifiedFor: TimeInterval = 600
+    static let maxHeldMessages = 32
+}
+
+private final class PendingConnection {
+    let connection: NWConnection
+    let address: String
+    var frames = FrameBuffer(limit: Incoming.initFrameLimit)
+
+    init(connection: NWConnection, address: String) {
+        self.connection = connection
+        self.address = address
+    }
+}
+
+private enum IndirectTarget {
+    case peer(PeerLink)
+    /// Our upload's file connection, by transfer token.
+    case upload(UInt32)
+}
+
+private struct IndirectRequest {
+    let target: IndirectTarget
+    let username: String
+}
+
+private final class UploadAttempt {
+    let token: UInt32
+    let username: String
+    var direct: NWConnection?
+    var directFailed = false
+    var indirectToken: UInt32?
+    var claimed = false
+
+    init(token: UInt32, username: String) {
+        self.token = token
+        self.username = username
+    }
 }
 
 private struct UploadJob {
