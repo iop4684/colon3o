@@ -69,8 +69,10 @@ final class PortSharing: ObservableObject {
             Task { @MainActor in self?.pathChanged(path) }
         }
         monitor.start(queue: DispatchQueue(label: "colon3o.network-path"))
+        // Published values arrive on the main thread (SoulseekModel is main-actor); the work itself
+        // runs a moment later, after the new value is in place.
         soulseek.$connection.removeDuplicates()
-            .sink { [weak self] _ in self?.refresh() }
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
             .store(in: &cancellables)
         soulseek.$listenerStatus
             .map { status -> Bool in
@@ -78,7 +80,7 @@ final class PortSharing: ObservableObject {
                 return false
             }
             .removeDuplicates()
-            .sink { [weak self] _ in self?.refresh() }
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
             .store(in: &cancellables)
     }
 
