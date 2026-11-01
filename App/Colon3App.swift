@@ -19,6 +19,7 @@ struct Colon3App: App {
     @StateObject private var trending: TrendingStore
     @StateObject private var drive: GoogleDrive
     @StateObject private var backup: BackupService
+    @StateObject private var discord: DiscordPresence
     @Environment(\.scenePhase) private var scenePhase
     private let transferMonitor: TransferMonitor
 
@@ -55,8 +56,10 @@ struct Colon3App: App {
         _completeness = StateObject(wrappedValue: completeness)
         transferMonitor = TransferMonitor(soulseek: soulseek, player: player, stats: stats, backup: backup)
         _favorites = StateObject(wrappedValue: favorites)
+        AppServices.configure(player: player, library: library, playlists: playlists, favorites: favorites)
         _drive = StateObject(wrappedValue: drive)
         _backup = StateObject(wrappedValue: backup)
+        _discord = StateObject(wrappedValue: DiscordPresence(player: player, library: library))
         _library = StateObject(wrappedValue: library)
         _soulseek = StateObject(wrappedValue: soulseek)
         _player = StateObject(wrappedValue: player)
@@ -89,6 +92,7 @@ struct Colon3App: App {
                 .environmentObject(trending)
                 .environmentObject(drive)
                 .environmentObject(backup)
+                .environmentObject(discord)
                 .onAppear {
                     soulseek.start()
                     lastfm.flush()
@@ -100,6 +104,8 @@ struct Colon3App: App {
                         router.handle(url)
                         return
                     }
+                    // Discord sign-in replies are caught by the sign-in sheet; never import them.
+                    if url.scheme?.lowercased().hasPrefix("discord-") == true { return }
                     // "Open in colon3" / "Copy to colon3" from Files or another app.
                     Task {
                         _ = await library.importItems([url])

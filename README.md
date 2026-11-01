@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/Platform-iOS%2018.0%2B-0a84ff" alt="Platform: iOS 18.0+">
   <a href="https://github.com/AmineWallah/colon3/releases/latest"><img src="https://img.shields.io/github/v/release/AmineWallah/colon3?label=Latest%20release&color=brightgreen" alt="Latest release"></a>
   <a href="https://github.com/AmineWallah/colon3/releases"><img src="https://img.shields.io/github/downloads/AmineWallah/colon3/total?label=Download&color=brightgreen" alt="Downloads"></a>
+  <a href="https://aminewallah.github.io/colon3/source.html"><img src="https://img.shields.io/badge/AltStore%20%2F%20SideStore-Add%20source-8e44ad" alt="Add the AltStore / SideStore source"></a>
 </p>
 
 A native Soulseek client and music player for iOS. Search the Soulseek network, download straight to the phone, and play from a local library. No server or desktop client in between.
@@ -19,13 +20,31 @@ A native Soulseek client and music player for iOS. Search the Soulseek network, 
 - **Artwork:** a cover you picked (Photos or Files), then cover files from the album folder, then art embedded in the music, then an iTunes lookup. Album downloads fetch the folder's cover (and any .lrc lyrics) from the peer too.
 - **Player:** Apple Music-style full screen with synced lyrics (a .lrc next to the song, else LRCLIB), queue editing, shuffle and repeat, playback speed, AirPlay, and the Liquid Glass mini player on iOS 26+.
 - **Autoplay:** when the queue ends, similar songs keep playing (Last.fm similar tracks and artists, else the same artist, most played or random). Picks you don't have get a Download button (or download on their own, if you turn that on) and play once they're downloaded from Soulseek.
-- **Sound:** 10-band EQ with presets, and a bit-perfect mode for USB DACs. Multichannel and Dolby Atmos files play through AVPlayer with spatial audio instead, with no EQ.
+- **Sound:** a 10-band graphic EQ with presets, a parametric EQ that loads your headphones' AutoEQ profile, and a bit-perfect mode for USB DACs. Multichannel and Dolby Atmos files play through AVPlayer with spatial audio instead, with no EQ.
 - **Transfers:** multi-select retry/cancel/clear/delete, a Live Activity, Seeding Mode, and Wi-Fi Transfer from a computer's browser.
 - **Stats:** listening time, top songs/artists/albums, upload/download totals.
 - **Backup:** your song list, playlists, favourites, stats and settings to Google Drive (daily if you like) or a file, optionally with the music itself. Restoring brings it all back and downloads missing songs from Drive or Soulseek.
 - **Last.fm** scrobbling with your own API key, which autoplay also uses for recommendations.
+- **Discord:** "Listening to *artist*" on your profile with the song, album and cover, after signing in once (builds made with Discord's SDK).
+- **AltStore and SideStore:** add the colon3 source and get updates in the store.
+- **Siri and Shortcuts:** "Play music in colon3", "Play a song in colon3", "Play <playlist> in colon3", "Shuffle colon3", pause, skip and more, with no setup.
 
 Meant for sideloading. It won't pass App Store review.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/player.jpg" width="250" alt="Main player"><br><b>Main player</b></td>
+    <td align="center"><img src="docs/screenshots/lyrics.jpg" width="250" alt="Lyrics display"><br><b>Lyrics display</b></td>
+    <td align="center"><img src="docs/screenshots/autoplay.jpg" width="250" alt="Autoplay"><br><b>Autoplay</b></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/search.jpg" width="250" alt="Soulseek browsing"><br><b>Soulseek browsing</b></td>
+    <td align="center"><img src="docs/screenshots/library.jpg" width="250" alt="Album browser"><br><b>Album browser</b></td>
+    <td align="center"><img src="docs/screenshots/equalizer.jpg" width="250" alt="Built-in EQ"><br><b>Built-in EQ</b></td>
+  </tr>
+</table>
 
 ## Layout
 
@@ -34,7 +53,7 @@ App/
   Library/                 scanning, metadata (incl. a small FLAC tag reader), albums, artwork, favourites
   Playback/                AVAudioEngine + EQ backend, AVPlayer spatial backend, queue
   Import/                  Spotify, Apple Music and YouTube Music playlist import
-  Services/                LRCLIB lyrics, Last.fm, Google Drive backup, keychain and settings
+  Services/                LRCLIB lyrics, Last.fm, Google Drive backup, Siri intents, keychain and settings
   Soulseek/                search results, downloads, cover fetching
   Views/                   SwiftUI screens
 Packages/SoulseekKit/      Protocol package (no dependencies)
@@ -45,9 +64,15 @@ Packages/SoulseekKit/      Protocol package (no dependencies)
   Tests/SoulseekKitTests/            codec tests against bytes produced by Nicotine+
 scripts/gen_fixtures.py    regenerates the test fixtures from Nicotine+'s encoders
 scripts/make-ota-site.py   builds an over-the-air install page for a signed IPA
+scripts/fetch-discord-sdk.sh  CI: fetches Discord's Social SDK from a private repository
+scripts/make-altstore-source.py  CI: builds the AltStore / SideStore source from the GitHub releases
+DiscordBridge/             Objective-C++ bridge to Discord's SDK (only built with project-discord.yml)
 docs/logo.png              the README's icon (AppIcon with rounded corners)
+docs/screenshots/          the README's screenshots
 pages/privacy.html         privacy policy, deployed to the Pages site root (linked from Google sign-in)
+pages/source.html          "Add to AltStore / SideStore" page for the source
 project.yml                XcodeGen spec
+project-discord.yml        project.yml plus Discord's SDK, used by CI when it has the SDK
 .github/workflows/build.yml  CI/CD: tests, IPA build, signing, install page, releases
 ```
 
@@ -132,6 +157,29 @@ Backups talk to the Google Drive API directly, so the app needs an OAuth client 
 
 A build without a client ID still has Settings › Backup: it asks for one there, and backup files work without Google at all.
 
+### One-time setup for Discord
+
+Discord Rich Presence uses Discord's Social SDK. Users just tap Connect Discord; you set up one Discord application and give CI the SDK. The SDK is closed source and its terms don't allow redistributing it, so it never goes in this repository: CI downloads it from a **private** repository of yours. Builds without it work normally and say so in Settings › Discord.
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application named **colon3** and give it the app icon (the presence falls back to it when a song has no cover online).
+2. **Getting Started / Social SDK:** enable the Social SDK for the application (fill in the short form if asked).
+3. **OAuth2:** add the redirect `discord-<APPLICATION_ID>:/authorize/callback` and turn on **Public Client** (colon3 has no server, so it signs in with PKCE like the Google and Spotify logins).
+4. **Downloads:** download the Social SDK for **iOS** (a zip with `discord_partner_sdk.xcframework`).
+5. Make a private repository and attach the zip to a release there:
+   ```sh
+   gh repo create colon3-vendor --private
+   gh release create discord-sdk --repo <user>/colon3-vendor --title "Discord Social SDK" ~/Downloads/DiscordSocialSdk-*.zip
+   ```
+   For a new SDK version, upload a new release; CI takes the latest one.
+6. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) with access to **only** that repository and **Contents: Read-only**, then give CI the token, the repository and the application ID:
+   ```sh
+   gh secret set DISCORD_SDK_TOKEN            # paste the token
+   gh variable set DISCORD_SDK_REPO --body <user>/colon3-vendor
+   gh variable set DISCORD_APP_ID --body <APPLICATION_ID>
+   ```
+
+The next build logs "Building with Discord Rich Presence". The privacy policy page already covers what's sent to Discord.
+
 ### Beta channel
 
 Push risky changes to a `beta` branch first. Its signed build goes to `<pages url>/beta/` and leaves the stable page alone; each deploy copies the other channel's files from the live site so both stay up. Builds report their channel, and Settings › Software Update follows the matching page (switchable between Stable and Beta).
@@ -165,7 +213,21 @@ This builds version 0.2.0 and attaches `colon3-0.2.0-unsigned.ipa` to a GitHub R
   cd ~/colon3-dist && python3 -m http.server 8000
   ```
   Serve only that output folder, never your home or Downloads folder. Stop both servers when you're done.
-- **SideStore / AltStore:** open the unsigned IPA from a release or workflow artifact. They sign it with your Apple ID on-device. Free accounts: 7-day expiry, 3 apps max.
+- **SideStore / AltStore:** add the colon3 source (below) for updates in the store, or open the unsigned IPA from a release or workflow artifact. They sign it with your Apple ID on-device. Free accounts: 7-day expiry, 3 apps max.
+
+### AltStore and SideStore
+
+On your iPhone, open [the source page](https://aminewallah.github.io/colon3/source.html) and tap **Add to AltStore** or **Add to SideStore**. Or, in the app, open **Sources**, tap **+** and add:
+
+```
+https://aminewallah.github.io/colon3/altstore.json
+```
+
+Then install colon3 from it. New stable releases show up under **Updates**, and the store's weekly refresh keeps the signature alive. The source lists the last five stable releases (beta builds stay on the install page).
+
+The store signs colon3 with your own Apple ID. With a free account that means at most 3 sideloaded apps at once, a refresh every 7 days, and colon3 uses 2 of the 10 App IDs a week allows (the app and its Live Activity widget). The store also changes the bundle ID; Google Drive backup and Discord sign-in still work, since both sign in through a web page.
+
+For maintainers: CI builds `altstore.json` with every Pages deploy from the GitHub releases (`scripts/make-altstore-source.py` reads each release's IPA for its exact version, build number and usage descriptions, which AltStore checks before installing). Tagging a release asks for a main build afterwards so the new version appears without another push.
 
 ## Using it
 
@@ -190,7 +252,7 @@ Settings › Playback. With a wired USB DAC, each song's sample rate is requeste
 
 ### Wi-Fi Transfer
 
-Settings › Wi-Fi Transfer, then open the address on a computer on the same network and enter the code. Drop files or folders in, download or delete files. Over a cable on Linux: `ifuse --documents com.aminewallah.colon3 ~/iphone`.
+Settings › Transfers › Wi-Fi Transfer (or `colon3://wifi`), then open the address on a computer on the same network and enter the code. Drop files or folders in, download or delete files. Over a cable on Linux: `ifuse --documents com.aminewallah.colon3 ~/iphone`.
 
 ### Last.fm
 
@@ -224,7 +286,7 @@ Spotify only shows development-mode apps the songs of playlists **you own or col
 
 ### Home
 
-The first tab is laid out like Apple Music's, with four shelves you can reorder or hide in Settings › Home Sections:
+The first tab is laid out like Apple Music's, with four shelves you can reorder or hide in Settings › Appearance › Home Sections:
 
 - **Trending Songs:** songs on Apple Music's top 100 that came out recently (in the last 6 weeks, widening to 3 or 6 months when there are fewer than 8), in chart order.
 - **Top 100:** Apple Music's 100 most played songs.
@@ -248,6 +310,28 @@ Library › Playlists › Import from YouTube Music…, then paste a playlist li
 ### Importing from Apple Music
 
 Library › Playlists › Import from Apple Music… asks for access to your Music library and lists its playlists. They're matched and downloaded the same way. colon3 only reads song names; it can't copy Apple Music's own files.
+
+### Siri and Shortcuts
+
+These phrases work as soon as colon3 is installed (Settings › Siri & Shortcuts lists them):
+
+| Say | Does |
+|---|---|
+| "Play music in colon3" / "Resume colon3" | Resumes, or shuffles the library if nothing was queued |
+| "Play a song in colon3" | Asks what you want to hear: a song, album or artist from your library, or "*song* by *artist*" |
+| "Play *playlist* in colon3" / "Shuffle *playlist* in colon3" | Plays one of your playlists |
+| "Shuffle colon3" | Shuffles the whole library |
+| "Play my favourites in colon3" | Shuffles favourite songs and albums |
+| "Pause colon3", "Next song in colon3", "Previous song in colon3" | Transport |
+| "What's playing in colon3" | Says the current song |
+
+They're App Intents, so they need no SiriKit entitlement and work in sideloaded builds; every action also shows up in the Shortcuts app. They are audio-playback intents, so Siri can start music without bringing colon3 to the front.
+
+### Discord
+
+Settings › Discord › **Connect Discord** signs in through Discord's website (or a Discord login already in Safari) and turns it on. While a song plays, your profile shows "Listening to *artist*" with the song, album, cover and progress, and the status next to your name shows the song title. Pausing clears it. Covers are looked up in Apple's catalogue (the iTunes Search API), because Discord can only load images from the web; songs it can't find show the colon3 icon.
+
+Discord's SDK documentation calls "Playing" the activity type that matters for it; colon3 asks for "Listening to *artist*" first. If Discord won't take the artist as the activity's name it uses "Listening to colon3" (with the artist under the song), and if it won't take "Listening" at all, "Playing colon3", saying so in Settings with a button to try again. It keeps working in the background as long as music plays, since that's what keeps colon3 running.
 
 ### Backup
 

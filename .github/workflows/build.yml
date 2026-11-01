@@ -3,7 +3,8 @@ name: CI/CD
 # Every push and PR: protocol tests on Linux, then an unsigned IPA from macOS.
 # Pushes to main: also sign with the distribution cert (if the secrets are set)
 #   and publish an over-the-air install page on GitHub Pages.
-# Tags v*: also attach the unsigned IPA to a GitHub Release.
+# Tags v*: also attach the unsigned IPA to a GitHub Release, then rebuild main so the Pages
+#   site's AltStore / SideStore source (altstore.json) lists it.
 
 on:
   push:
@@ -75,17 +76,33 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Fetch Discord Social SDK
+        # Optional: only with the private SDK repository set up (see README). Pull requests from
+        # forks get no secrets and build without Discord.
+        env:
+          DISCORD_SDK_REPO: ${{ vars.DISCORD_SDK_REPO }}
+          DISCORD_SDK_TOKEN: ${{ secrets.DISCORD_SDK_TOKEN }}
+        run: scripts/fetch-discord-sdk.sh
+
       - name: Generate project
-        run: xcodegen generate
+        run: |
+          if [ -d Vendor/discord_partner_sdk.xcframework ]; then
+            echo "Building with Discord Rich Presence"
+            xcodegen generate --spec project-discord.yml
+          else
+            xcodegen generate
+          fi
 
       - name: Build
         env:
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          DISCORD_APP_ID: ${{ vars.DISCORD_APP_ID }}
         run: |
           set -o pipefail
           # Google Drive backups need the iOS OAuth client ID (a repository variable; not secret).
           extra=()
           if [ -n "$GOOGLE_CLIENT_ID" ]; then extra+=("COLON3_GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID"); fi
+          if [ -n "$DISCORD_APP_ID" ]; then extra+=("COLON3_DISCORD_APP_ID=$DISCORD_APP_ID"); fi
           xcodebuild build \
             -project colon3.xcodeproj \
             -scheme colon3 \
@@ -101,7 +118,8 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             ${extra[@]+"${extra[@]}"} \
             | tee xcodebuild.log | grep -E "error:|warning:|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/Build/Products/Release-iphoneos/colon3.app
+          # The executable, not just the folder: a failed build can leave an empty colon3.app.
+          test -f build/Build/Products/Release-iphoneos/colon3.app/colon3
 
       - name: Package IPA
         run: |
@@ -208,6 +226,7 @@ jobs:
         env:
           BASE: ${{ steps.pages.outputs.base_url }}
           CHANNEL: ${{ needs.build.outputs.channel }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Pages hosts one site, so each deploy carries both channels: this build's files, plus
           # the other channel's current files copied from the live site.
@@ -230,6 +249,18 @@ jobs:
           echo "Install page ($CHANNEL): $BASE/$mine" >> "$GITHUB_STEP_SUMMARY"
           # Static pages at the site root, like the privacy policy Google's consent screen links to.
           cp pages/*.html site/
+          # AltStore / SideStore source for the stable releases (README › AltStore and SideStore).
+          # Starts from the live copy, so a failed update keeps the old one instead of none.
+          cp App/Assets.xcassets/AppIcon.appiconset/AppIcon.png site/icon.png
+          curl -fsSL "$BASE/altstore.json" -o site/altstore.json || rm -f site/altstore.json
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" > "$RUNNER_TEMP/releases.json" || true
+          # --previous: releases it already lists aren't downloaded again (that would add to the
+          # download counter on every deploy).
+          python3 scripts/make-altstore-source.py --releases "$RUNNER_TEMP/releases.json" \
+            --base-url "$BASE" --ipa-dir "$RUNNER_TEMP/ipas" --previous site/altstore.json \
+            --out "$RUNNER_TEMP/altstore.json" \
+            && cp "$RUNNER_TEMP/altstore.json" site/altstore.json \
+            || echo "::warning::AltStore source not updated; keeping the previous one."
 
       - uses: actions/upload-pages-artifact@v3
         if: steps.check.outputs.enabled == 'true'
@@ -266,6 +297,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # To rebuild main's Pages site afterwards, which regenerates the AltStore source.
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -287,3 +320,11 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "colon3 ${GITHUB_REF_NAME#v}" \
             "${args[@]}"
+
+      - name: Update the AltStore source
+        # The source is built with the Pages site; a release made with this job's token doesn't
+        # start other workflows, so ask for a main build. Stable releases only.
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build.yml --ref main --repo "$GITHUB_REPOSITORY"
