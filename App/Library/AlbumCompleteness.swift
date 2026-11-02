@@ -107,11 +107,11 @@ final class AlbumCompletenessStore: ObservableObject {
             return
         }
         let mbid = album.tracks.compactMap(\.musicBrainzAlbumID).first
-        let title = album.title, artist = album.artist, count = album.tracks.count
+        let title = album.title, artist = album.artist, localTitles = album.tracks.map(\.title)
         Task {
             let tracklist = await MusicBrainz.shared.tracklist(albumID: album.id, previousIDs: force ? [] : previous,
                                                                releaseID: mbid, title: title, artist: artist,
-                                                               localCount: count, force: force)
+                                                               localTitles: localTitles, force: force)
             if let tracklist {
                 self.results[album.id] = Self.compare(album, expected: tracklist.tracks, source: "MusicBrainz: \(tracklist.title)")
                 self.forgetRename(of: album)
@@ -256,11 +256,14 @@ actor MusicBrainz {
     private struct Cached: Codable {
         let tracklist: Tracklist?
         let fetched: Date
+        /// 2: searched with the song-based fallbacks. "Not found" from older searches is retried.
+        var version: Int?
     }
 
     /// The best-matching release's tracks, or nil if none was found.
     func tracklist(albumID: String, previousIDs: [String] = [], releaseID: String?, title: String, artist: String,
-                   localCount: Int, force: Bool) async -> (title: String, tracks: [ExpectedTrack])? {
+                   localTitles: [String], force: Bool) async -> (title: String, tracks: [ExpectedTrack])? {
+        let localCount = localTitles.count
         let file = directory.appendingPathComponent(albumID + ".json")
         // Renamed with Edit Info: start from the tracklist found under the old name. (If the old
         // name found nothing, search again under the new one: fixing the name may be why it changed.)
@@ -272,26 +275,104 @@ actor MusicBrainz {
             try? FileManager.default.copyItem(at: old, to: file)
         }
         if !force, let data = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode(Cached.self, from: data),
-           cached.tracklist != nil || Date().timeIntervalSince(cached.fetched) < 7 * 86_400 {
+           cached.tracklist != nil || (cached.version == 2 && Date().timeIntervalSince(cached.fetched) < 7 * 86_400) {
             return cached.tracklist.map { ($0.title, $0.expected()) }
         }
 
         var found: Tracklist?
         do {
-            let id: String?
             if let releaseID {
-                id = releaseID
+                found = try await fetchRelease(releaseID)
             } else {
-                id = try await searchRelease(title: title, artist: artist, localCount: localCount)
+                found = try await findRelease(title: title, artist: artist, localCount: localCount, localTitles: localTitles)
             }
-            if let id { found = try await fetchRelease(id) }
         } catch {
             return nil  // Network trouble: don't cache, try again later
         }
-        if let data = try? JSONEncoder().encode(Cached(tracklist: found, fetched: Date())) {
+        if let data = try? JSONEncoder().encode(Cached(tracklist: found, fetched: Date(), version: 2)) {
             try? data.write(to: file, options: .atomic)
         }
         return found.map { ($0.title, $0.expected()) }
+    }
+
+    /// By album title and artist first. If that finds nothing (the album was renamed or given
+    /// another artist with Edit Info, or is tagged differently from MusicBrainz), by the title
+    /// alone, then by the songs themselves; those only count when most of the songs are on it.
+    private func findRelease(title: String, artist: String, localCount: Int, localTitles: [String]) async throws -> Tracklist? {
+        if let id = try await searchRelease(title: title, artist: artist, localCount: localCount),
+           let tracklist = try await fetchRelease(id) {
+            return tracklist
+        }
+        let wanted = localTitles.map(AlbumCompletenessStoreNormalizer.title).filter { $0.count >= 2 }
+        guard wanted.count >= 2 else { return nil }
+
+        var tried = Set<String>()
+        var candidates = try await releaseIDs(query: "release:\"\(Self.quoted(title))\"", sameTitleAs: title)
+        candidates += try await releasesWithSongs(localTitles)
+        for id in candidates where tried.insert(id).inserted {
+            guard tried.count <= 5 else { break }
+            if let tracklist = try await fetchRelease(id), Self.hasMostSongs(tracklist, wanted) { return tracklist }
+        }
+        return nil
+    }
+
+    /// At least 60% of our songs (and two or more) are on the release.
+    private static func hasMostSongs(_ tracklist: Tracklist, _ wanted: [String]) -> Bool {
+        let theirs = Set(tracklist.tracks.map { AlbumCompletenessStoreNormalizer.title($0.title) })
+        let matched = wanted.filter { mine in
+            theirs.contains(mine) || theirs.contains { min($0.count, mine.count) >= 5 && ($0.hasPrefix(mine) || mine.hasPrefix($0)) }
+        }.count
+        return matched >= 2 && Double(matched) >= Double(wanted.count) * 0.6
+    }
+
+    private static func quoted(_ text: String) -> String {
+        text.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "\\", with: "")
+    }
+
+    /// Releases from a search whose title matches ours.
+    private func releaseIDs(query: String, sameTitleAs title: String) async throws -> [String] {
+        var components = URLComponents(string: "https://musicbrainz.org/ws/2/release/")!
+        components.queryItems = [URLQueryItem(name: "query", value: query),
+                                 URLQueryItem(name: "fmt", value: "json"),
+                                 URLQueryItem(name: "limit", value: "10")]
+        struct Response: Decodable {
+            struct Release: Decodable {
+                let id: String
+                let title: String
+            }
+            let releases: [Release]
+        }
+        let response: Response = try await get(components.url!)
+        let wanted = AlbumCompletenessStoreNormalizer.title(title)
+        return response.releases.filter { AlbumCompletenessStoreNormalizer.title($0.title) == wanted }.map(\.id)
+    }
+
+    /// Releases that two of our songs both appear on (looked up by song title alone, since the
+    /// artist may be the thing that was edited), most likely first.
+    private func releasesWithSongs(_ titles: [String]) async throws -> [String] {
+        // The two longest titles are the most telling.
+        let picks = titles.filter { AlbumCompletenessStoreNormalizer.title($0).count >= 3 }
+            .sorted { $0.count > $1.count }.prefix(2)
+        guard picks.count == 2 else { return [] }
+        struct Response: Decodable {
+            struct Recording: Decodable {
+                struct Release: Decodable { let id: String }
+                let releases: [Release]?
+            }
+            let recordings: [Recording]
+        }
+        var sets: [[String]] = []
+        for title in picks {
+            var components = URLComponents(string: "https://musicbrainz.org/ws/2/recording/")!
+            components.queryItems = [URLQueryItem(name: "query", value: "recording:\"\(Self.quoted(title))\""),
+                                     URLQueryItem(name: "fmt", value: "json"),
+                                     URLQueryItem(name: "limit", value: "50")]
+            let response: Response = try await get(components.url!)
+            sets.append(response.recordings.flatMap { ($0.releases ?? []).map(\.id) })
+        }
+        let second = Set(sets[1])
+        var seen = Set<String>()
+        return sets[0].filter { second.contains($0) && seen.insert($0).inserted }
     }
 
     private func searchRelease(title: String, artist: String, localCount: Int) async throws -> String? {
