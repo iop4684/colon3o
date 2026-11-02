@@ -25,6 +25,7 @@ struct PlaylistsListContent: View {
 
     @State private var naming = false
     @State private var newName = ""
+    @State private var reordering = false
 
     private var favoriteTracks: [Track] { library.tracks.filter { favorites.isFavorite($0) } }
 
@@ -48,6 +49,15 @@ struct PlaylistsListContent: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .overlay(alignment: .trailing) {
+                if playlists.playlists.count > 1 && query.isEmpty {
+                    Button("Reorder") { reordering = true }
+                        .font(.subheadline.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.trailing, 20)
+                }
+            }
             Divider().padding(.leading, 98)
 
             if let job = importer.job {
@@ -73,6 +83,11 @@ struct PlaylistsListContent: View {
                             Label("Shuffle", systemImage: "shuffle")
                         }
                         .disabled(tracks.isEmpty)
+                        if playlists.playlists.count > 1 {
+                            Button { reordering = true } label: {
+                                Label("Reorder Playlists…", systemImage: "arrow.up.arrow.down")
+                            }
+                        }
                         Button(role: .destructive) { playlists.delete(playlist) } label: {
                             Label("Delete Playlist", systemImage: "trash")
                         }
@@ -80,6 +95,7 @@ struct PlaylistsListContent: View {
             }
         }
         .padding(.bottom, 24)
+        .sheet(isPresented: $reordering) { ReorderPlaylistsSheet() }
         .alert("New Playlist", isPresented: $naming) {
             TextField("Name", text: $newName)
             Button("Cancel", role: .cancel) {}
@@ -509,6 +525,40 @@ struct SongPickerSheet: View {
                         dismiss()
                     }
                     .disabled(chosen.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+/// Drag the playlists into your own order; the Playlists list (and Add to Playlist) follow it.
+struct ReorderPlaylistsSheet: View {
+    @EnvironmentObject private var playlists: PlaylistStore
+    @EnvironmentObject private var library: LibraryStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(playlists.playlists) { playlist in
+                    HStack(spacing: 12) {
+                        PlaylistArtwork(tracks: playlists.tracks(of: playlist, in: library), playlistID: playlist.id, size: 44)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(playlist.name).lineLimit(1)
+                            Text("\(playlist.trackIDs.count) song\(playlist.trackIDs.count == 1 ? "" : "s")")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .onMove { playlists.movePlaylists(from: $0, to: $1) }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Reorder Playlists")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }.fontWeight(.semibold)
                 }
             }
         }

@@ -191,6 +191,12 @@ final class PlaylistStore: ObservableObject {
         save()
     }
 
+    /// Your own order for the playlists themselves (Reorder Playlists).
+    func movePlaylists(from offsets: IndexSet, to destination: Int) {
+        playlists.move(fromOffsets: offsets, toOffset: destination)
+        save()
+    }
+
     private func save() {
         let snapshot = playlists
         if let data = try? JSONEncoder().encode(snapshot) {
