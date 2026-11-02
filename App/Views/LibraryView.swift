@@ -8,7 +8,10 @@ struct LibraryView: View {
 
     enum Sort: String, CaseIterable, Identifiable {
         case title = "Title", artist = "Artist", recent = "Recently Added"
+        case plays = "Most Played", playlists = "In Most Playlists"
         var id: String { rawValue }
+        /// Sorted by name, with letter sections and the A–Z index.
+        var isAlphabetical: Bool { self == .title || self == .artist }
     }
 
     struct Section<Item>: Identifiable {
@@ -21,6 +24,8 @@ struct LibraryView: View {
     @EnvironmentObject private var favorites: FavoritesStore
     @EnvironmentObject private var player: Player
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var playlists: PlaylistStore
+    @EnvironmentObject private var stats: StatsStore
 
     @AppStorage("library.scope") private var scope: Scope = .albums
     @AppStorage("library.sort") private var sort: Sort = .title
@@ -124,10 +129,23 @@ struct LibraryView: View {
     }
 
     private func makeSections<Item>(_ items: [Item], title: @escaping (Item) -> String, artist: @escaping (Item) -> String,
-                                    added: @escaping (Item) -> Date) -> [Section<Item>] {
+                                    added: @escaping (Item) -> Date, songs: @escaping (Item) -> [Track]) -> [Section<Item>] {
         switch sort {
         case .recent:
             return [Section(letter: "", items: items.sorted { added($0) > added($1) })]
+        case .plays, .playlists:
+            // Highest first; an album or artist adds up its songs.
+            let counts = sort == .playlists ? playlists.membershipCounts() : [:]
+            let score: (Item) -> Int = { item in
+                songs(item).reduce(0) { total, track in
+                    total + (sort == .playlists ? counts[track.id] ?? 0 : stats.plays(of: track))
+                }
+            }
+            let scored = items.map { (item: $0, score: score($0)) }
+            return [Section(letter: "", items: scored.sorted { lhs, rhs in
+                if lhs.score != rhs.score { return lhs.score > rhs.score }
+                return SortKey.less(title(lhs.item), title(rhs.item))
+            }.map(\.item))]
         case .title, .artist:
             let key = sort == .title ? title : artist
             let sorted = items.sorted { lhs, rhs in
@@ -166,7 +184,12 @@ struct LibraryView: View {
     // MARK: Albums
 
     private var albumsGrid: some View {
-        let sections = makeSections(filteredItems, title: \.title, artist: \.artist, added: \.addedAt)
+        let sections = makeSections(filteredItems, title: \.title, artist: \.artist, added: \.addedAt, songs: { item in
+            switch item {
+            case let .album(album): return album.tracks
+            case let .single(track): return [track]
+            }
+        })
         let letters = sections.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {
@@ -184,7 +207,7 @@ struct LibraryView: View {
                 .padding(.bottom, 24)
             }
             .overlay(alignment: .trailing) {
-                if sort != .recent, letters.count > 1, query.isEmpty { indexBar(letters, proxy: proxy) }
+                if sort.isAlphabetical, letters.count > 1, query.isEmpty { indexBar(letters, proxy: proxy) }
             }
         }
     }
@@ -261,7 +284,7 @@ struct LibraryView: View {
     // MARK: Songs
 
     private var songsList: some View {
-        let sections = makeSections(filteredTracks, title: \.title, artist: \.artist, added: \.addedAt)
+        let sections = makeSections(filteredTracks, title: \.title, artist: \.artist, added: \.addedAt, songs: { [$0] })
         let ordered = sections.flatMap(\.items)
         let letters = sections.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
@@ -295,9 +318,25 @@ struct LibraryView: View {
                 .padding(.bottom, 24)
             }
             .overlay(alignment: .trailing) {
-                if sort != .recent, letters.count > 1, query.isEmpty { indexBar(letters, proxy: proxy) }
+                if sort.isAlphabetical, letters.count > 1, query.isEmpty { indexBar(letters, proxy: proxy) }
             }
         }
+    }
+
+    /// Artist and album, plus the number the list is sorted by.
+    private func songSubtitle(_ track: Track) -> String {
+        var parts = [track.artist]
+        switch sort {
+        case .playlists:
+            let count = playlists.playlists.filter { $0.trackIDs.contains(track.id) }.count
+            parts.append("in \(count) playlist\(count == 1 ? "" : "s")")
+        case .plays:
+            let plays = stats.plays(of: track)
+            parts.append("\(plays) play\(plays == 1 ? "" : "s")")
+        default:
+            if let album = library.album(containing: track)?.title { parts.append(album) }
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func songRow(_ track: Track, in ordered: [Track]) -> some View {
@@ -310,7 +349,7 @@ struct LibraryView: View {
             }
         } label: {
             TrackRow(track: track,
-                     subtitle: [track.artist, library.album(containing: track)?.title].compactMap { $0 }.joined(separator: " · "),
+                     subtitle: songSubtitle(track),
                      isSelected: selecting ? selection.contains(id) : nil)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 6)
@@ -325,7 +364,8 @@ struct LibraryView: View {
 
     private var artistsList: some View {
         let artists = filteredArtists
-        let grouped = makeSections(artists, title: \.name, artist: \.name, added: { $0.albums.first?.addedAt ?? .distantPast })
+        let grouped = makeSections(artists, title: \.name, artist: \.name, added: { $0.albums.first?.addedAt ?? .distantPast },
+                                   songs: { $0.albums.flatMap(\.tracks) + $0.singles })
         let letters = grouped.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {

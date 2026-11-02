@@ -191,6 +191,15 @@ final class PlaylistStore: ObservableObject {
         save()
     }
 
+    /// How many of your playlists each song is in (a song listed twice in one counts once).
+    func membershipCounts() -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for playlist in playlists {
+            for id in Set(playlist.trackIDs) { counts[id, default: 0] += 1 }
+        }
+        return counts
+    }
+
     /// Your own order for the playlists themselves (Reorder Playlists).
     func movePlaylists(from offsets: IndexSet, to destination: Int) {
         playlists.move(fromOffsets: offsets, toOffset: destination)

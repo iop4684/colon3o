@@ -166,6 +166,12 @@ final class Player: ObservableObject {
     private var startedAt = Date()
     private var scrobbled = false
     private var countedPlay = false
+    /// The song whose listening is being counted (`current` has already moved on when a new one loads).
+    private var loadedTrack: Track?
+    /// Its full listen or skip has been recorded (it played to the end).
+    private var listenClosed = false
+    /// The playlist being played from (a playlist's id, "favorites" or "mostPlayed"), for its stats.
+    private(set) var playlistKey: String?
 
     init(equalizer: Equalizer) {
         self.equalizer = equalizer
@@ -217,8 +223,10 @@ final class Player: ObservableObject {
 
     // MARK: Queue
 
-    func play(_ tracks: [Track], startAt startIndex: Int = 0, shuffled: Bool = false) {
+    func play(_ tracks: [Track], startAt startIndex: Int = 0, shuffled: Bool = false, fromPlaylist key: String? = nil) {
         guard tracks.indices.contains(startIndex) else { return }
+        playlistKey = key
+        if let key { stats?.recordPlaylistStart(key) }
         if shuffled {
             var rest = tracks
             let first = rest.remove(at: Int.random(in: 0..<rest.count))
@@ -324,6 +332,7 @@ final class Player: ObservableObject {
     /// skipped (discoveries still downloading stay for later); with songs still queued it plays
     /// next-up and the rest of the queue follows.
     func playAutoplay(at offset: Int) {
+        playlistKey = nil  // songs autoplay adds aren't part of the playlist
         guard autoplayUpcoming.indices.contains(offset), let track = autoplayUpcoming[offset].track else { return }
         var items = autoplayUpcoming
         items.remove(at: offset)
@@ -637,6 +646,9 @@ final class Player: ObservableObject {
     }
 
     func stop() {
+        closeListening(natural: true)  // a full listen still counts; stopping isn't a skip
+        loadedTrack = nil
+        playlistKey = nil
         let wasPlaying = isPlaying
         backend?.stop()
         backend = nil
@@ -662,6 +674,9 @@ final class Player: ObservableObject {
 
     private func loadCurrent(autoplay: Bool) {
         guard let track = current else { return }
+        closeListening(natural: false)
+        loadedTrack = track
+        listenClosed = false
 
         // The new file goes straight into the backend that's already playing: the engine keeps
         // running and only its player node swaps files, so a song change is a clean cut. (Stopping
@@ -740,11 +755,31 @@ final class Player: ObservableObject {
 
     private func trackFinished() {
         maybeScrobble(force: true)
+        closeListening(natural: true)
         if repeatMode == .one {
+            // Each time round counts as a new listen.
+            listened = 0
+            countedPlay = false
+            listenClosed = false
             seek(to: 0)
             resume()
         } else {
             next()
+        }
+    }
+
+    /// Records how the outgoing song went: a full listen when at least two thirds of it was heard
+    /// (however it ended), a skip when you moved on to another song before that.
+    private func closeListening(natural: Bool) {
+        guard !listenClosed, let track = loadedTrack else { return }
+        listenClosed = true
+        let length = duration > 0 ? duration : track.duration
+        guard length > 0 else { return }
+        let album = library?.album(containing: track)?.title ?? track.album
+        if listened >= length * 2 / 3 {
+            stats?.recordFullListen(track, album: album)
+        } else if !natural, listened > 0 || isPlaying {
+            stats?.recordSkip(track, album: album)
         }
     }
 
@@ -764,6 +799,7 @@ final class Player: ObservableObject {
             if let track = current {
                 let album = library?.album(containing: track)?.title ?? track.album
                 stats?.addListening(track, album: album, seconds: 0.2)
+                if let playlistKey { stats?.addPlaylistListening(playlistKey, seconds: 0.2) }
                 // A play counts after 30 s, or half of a shorter song.
                 if !countedPlay, listened >= min(30, max(duration, 1) * 0.5) {
                     countedPlay = true

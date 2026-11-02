@@ -8,6 +8,10 @@ final class StatsStore: ObservableObject {
         var plays: Int
         var seconds: Double
         var lastPlayed: Date?
+        /// Times at least two thirds of the song was heard (optional: older stats files lack it).
+        var fullListens: Int?
+        /// Times you moved on to another song before two thirds of it was heard.
+        var skips: Int?
         /// Copied in so stats survive the file being deleted or renamed.
         var title: String
         var artist: String
@@ -23,8 +27,18 @@ final class StatsStore: ObservableObject {
         var since = Date()
     }
 
+    /// Listening while playing from a playlist (or Favorite Songs / Most Played).
+    struct PlaylistStat: Codable {
+        var seconds: Double = 0
+        /// Times you started playing it.
+        var starts = 0
+        var lastPlayed: Date?
+    }
+
     private struct Stored: Codable {
         var tracks: [String: TrackStat] = [:]
+        /// By playlist key: a playlist's id, "favorites" or "mostPlayed".
+        var playlists: [String: PlaylistStat]? = [:]
         /// "yyyy-MM-dd" → seconds listened that day.
         var days: [String: Double] = [:]
         var totals = Totals()
@@ -77,6 +91,37 @@ final class StatsStore: ObservableObject {
         scheduleSave()
     }
 
+    func recordFullListen(_ track: Track, album: String?) {
+        update(track, album: album) { $0.fullListens = ($0.fullListens ?? 0) + 1 }
+        scheduleSave()
+        revision += 1
+    }
+
+    func recordSkip(_ track: Track, album: String?) {
+        update(track, album: album) { $0.skips = ($0.skips ?? 0) + 1 }
+        scheduleSave()
+        revision += 1
+    }
+
+    func addPlaylistListening(_ key: String, seconds: Double) {
+        var stat = stored.playlists?[key] ?? PlaylistStat()
+        stat.seconds += seconds
+        stat.lastPlayed = Date()
+        if stored.playlists == nil { stored.playlists = [:] }
+        stored.playlists?[key] = stat
+        scheduleSave()
+    }
+
+    func recordPlaylistStart(_ key: String) {
+        var stat = stored.playlists?[key] ?? PlaylistStat()
+        stat.starts += 1
+        stat.lastPlayed = Date()
+        if stored.playlists == nil { stored.playlists = [:] }
+        stored.playlists?[key] = stat
+        scheduleSave()
+        revision += 1
+    }
+
     func recordPlay(_ track: Track, album: String?) {
         update(track, album: album) {
             $0.plays += 1
@@ -125,6 +170,13 @@ final class StatsStore: ObservableObject {
     var distinctSongs: Int { stored.tracks.values.filter { $0.plays > 0 }.count }
 
     func plays(of track: Track) -> Int { stored.tracks[track.id]?.plays ?? 0 }
+    func stat(of trackID: String) -> TrackStat? { stored.tracks[trackID] }
+    var totalFullListens: Int { stored.tracks.values.reduce(0) { $0 + ($1.fullListens ?? 0) } }
+    var totalSkips: Int { stored.tracks.values.reduce(0) { $0 + ($1.skips ?? 0) } }
+    var playlistStats: [String: PlaylistStat] { stored.playlists ?? [:] }
+
+    /// Every song with any listening, with its id, for the Song Stats list.
+    var allTrackStats: [(id: String, stat: TrackStat)] { stored.tracks.map { ($0.key, $0.value) } }
 
     func mostPlayed(limit: Int, in library: LibraryStore) -> [Track] {
         let ranked = stored.tracks
@@ -149,6 +201,23 @@ final class StatsStore: ObservableObject {
             if result.count == limit { break }
         }
         return result
+    }
+
+    struct Skipped: Identifiable {
+        let id: String
+        let title: String
+        let artist: String
+        let skips: Int
+        let fullListens: Int
+    }
+
+    func mostSkipped(limit: Int) -> [Skipped] {
+        stored.tracks
+            .filter { ($0.value.skips ?? 0) > 0 }
+            .sorted { (($0.value.skips ?? 0), -($0.value.fullListens ?? 0)) > (($1.value.skips ?? 0), -($1.value.fullListens ?? 0)) }
+            .prefix(limit)
+            .map { Skipped(id: $0.key, title: $0.value.title, artist: $0.value.artist,
+                           skips: $0.value.skips ?? 0, fullListens: $0.value.fullListens ?? 0) }
     }
 
     func topSongs(limit: Int) -> [Ranked] {

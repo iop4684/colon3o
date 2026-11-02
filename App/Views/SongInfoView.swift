@@ -9,6 +9,8 @@ struct SongInfoView: View {
     let opened: Track
 
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var stats: StatsStore
+    @EnvironmentObject private var playlists: PlaylistStore
     @Environment(\.dismiss) private var dismiss
     @State private var details: AudioDetails?
     @State private var editing = false
@@ -39,6 +41,7 @@ struct SongInfoView: View {
                     row("Disc", track.discNumber.map(String.init))
                     row("Year", track.year.map(String.init))
                 }
+                listening
                 Section("File") {
                     row("Name", track.url.lastPathComponent)
                     row("Folder", Self.shortFolder(track.folder))
@@ -60,6 +63,21 @@ struct SongInfoView: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    /// How you've listened to it, and which playlists it's in.
+    @ViewBuilder
+    private var listening: some View {
+        let stat = stats.stat(of: track.id)
+        let lists = playlists.playlists.filter { $0.trackIDs.contains(track.id) }.map(\.name)
+        Section("Listening") {
+            row("Plays", "\(stat?.plays ?? 0)")
+            row("Full Listens", "\(stat?.fullListens ?? 0)")
+            row("Skips", "\(stat?.skips ?? 0)")
+            row("Time Listened", Formatting.hours(stat?.seconds ?? 0))
+            row("Last Played", stat?.lastPlayed?.formatted(date: .abbreviated, time: .shortened))
+            row("In Playlists", lists.isEmpty ? "None" : "\(lists.count): " + lists.joined(separator: ", "))
+        }
     }
 
     @ViewBuilder

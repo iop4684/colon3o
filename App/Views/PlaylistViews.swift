@@ -10,6 +10,15 @@ enum PlaylistRoute: Hashable {
         if case let .user(id) = self { return id }
         return nil
     }
+
+    /// The key its listening is counted under in Stats.
+    var statsKey: String {
+        switch self {
+        case let .user(id): return id.uuidString
+        case .favorites: return "favorites"
+        case .mostPlayed: return "mostPlayed"
+        }
+    }
 }
 
 /// The Playlists scope of the library: smart lists first, then the user's own.
@@ -75,11 +84,11 @@ struct PlaylistsListContent: View {
                 row(route: .user(playlist.id), name: playlist.name, tracks: tracks, symbol: nil)
                     .contextMenu {
                         ArtworkMenu(target: .playlist(playlist))
-                        Button { player.play(tracks) } label: {
+                        Button { player.play(tracks, fromPlaylist: playlist.id.uuidString) } label: {
                             Label("Play", systemImage: "play")
                         }
                         .disabled(tracks.isEmpty)
-                        Button { player.play(tracks, shuffled: true) } label: {
+                        Button { player.play(tracks, shuffled: true, fromPlaylist: playlist.id.uuidString) } label: {
                             Label("Shuffle", systemImage: "shuffle")
                         }
                         .disabled(tracks.isEmpty)
@@ -293,7 +302,7 @@ struct PlaylistDetailView: View {
 
             ForEach(Array(tracks.enumerated()), id: \.offset) { offset, track in
                 Button {
-                    player.play(tracks, startAt: offset)
+                    player.play(tracks, startAt: offset, fromPlaylist: route.statsKey)
                 } label: {
                     HStack(spacing: 10) {
                         if case .mostPlayed = route {
@@ -412,10 +421,10 @@ struct PlaylistDetailView: View {
                 .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
             Text(name).font(.title2.weight(.bold)).multilineTextAlignment(.center)
             HStack(spacing: 12) {
-                Button { player.play(tracks) } label: {
+                Button { player.play(tracks, fromPlaylist: route.statsKey) } label: {
                     Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
-                Button { player.play(tracks, shuffled: true) } label: {
+                Button { player.play(tracks, shuffled: true, fromPlaylist: route.statsKey) } label: {
                     Label("Shuffle", systemImage: "shuffle").frame(maxWidth: .infinity)
                 }
             }
