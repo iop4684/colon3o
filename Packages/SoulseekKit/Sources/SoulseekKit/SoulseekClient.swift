@@ -150,11 +150,16 @@ public final class SoulseekClient: @unchecked Sendable {
     private var verifiedPeers: [String: Date] = [:]
     /// The IP the server last reported for each user.
     private var lastKnownIPs: [String: String] = [:]
+    /// "username|ip" pairs that turned out not to match.
+    private var rejectedPeers: [String: Date] = [:]
     /// The connection the message being handled came in on; replies go back over it.
     private var replyLink: PeerLink?
     /// Off when the app pauses sharing (away from Wi-Fi); queued requests wait.
     private var sharingAllowed = true
     private var lastShareListReply: [String: Date] = [:]
+    private var requestTimes: [String: [Date]] = [:]
+    /// Our shares grouped by folder, built once per change to them.
+    private var sharedFoldersCache: [SharedFolder]?
 
     public init(downloadDirectory: URL, incompleteDirectory: URL) {
         self.downloadDirectory = downloadDirectory
@@ -251,6 +256,7 @@ public final class SoulseekClient: @unchecked Sendable {
             var map: [String: LocalShare] = [:]
             for share in list { map[share.virtualPath] = share }
             self.shares = map
+            self.sharedFoldersCache = nil
             if self.isLoggedIn { self.sendShareCounts() }
         }
     }
@@ -419,10 +425,15 @@ public final class SoulseekClient: @unchecked Sendable {
             if lastKnownIPs.count > 2000 { lastKnownIPs.removeAll() }
             lastKnownIPs[username] = ip
             let waiters = addressWaiters.removeValue(forKey: username) ?? []
-            let address: PeerAddress? = (ip == "0.0.0.0" || port == 0) ? nil : PeerAddress(ip: ip, port: port)
+            // 0.0.0.0 means offline. Port 0 means they have no port we can reach, but they can
+            // still connect to us (indirect connection).
+            let address: PeerAddress? = ip == "0.0.0.0" ? nil : PeerAddress(ip: ip, port: port)
             waiters.forEach { $0(address) }
 
         case let .connectToPeer(username, type, ip, port, token):
+            // The server's word for where this user is (used to check their file connections).
+            if lastKnownIPs.count > 2000 { lastKnownIPs.removeAll() }
+            lastKnownIPs[username] = ip
             switch type {
             case ConnectionType.peer.rawValue:
                 openPiercedPeer(username: username, ip: ip, port: port, token: token)
@@ -479,7 +490,9 @@ public final class SoulseekClient: @unchecked Sendable {
     // MARK: - Peer (P) connections
 
     /// Sends messages to a peer, opening a direct connection if there isn't one yet.
-    private func sendToPeer(_ username: String, _ messages: [PeerMessage],
+    /// `asReply`: an answer to the message being handled, which goes back over the connection it
+    /// came in on. Anything else goes over a connection to wherever the server says the user is.
+    private func sendToPeer(_ username: String, _ messages: [PeerMessage], asReply: Bool = false,
                             onSent: (() -> Void)? = nil, onFailure: (() -> Void)? = nil) {
         var frames: [Data] = []
         do {
@@ -489,18 +502,16 @@ public final class SoulseekClient: @unchecked Sendable {
             return
         }
 
-        // Answers to a request go back over the connection it came in on.
-        if let reply = replyLink, reply.username == username, reply.isReady, !reply.isClosed, let connection = reply.connection {
-            frames.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
-            reply.lastActivity = Date()
+        if asReply, let reply = replyLink, reply.username == username, reply.isReady, !reply.isClosed,
+           let connection = reply.connection {
+            send(frames, on: reply, connection: connection)
             onSent?()
             return
         }
 
         if let link = peers[username] {
             if link.isReady, let connection = link.connection {
-                frames.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
-                link.lastActivity = Date()
+                send(frames, on: link, connection: connection)
                 onSent?()
             } else {
                 link.outbox += frames
@@ -523,12 +534,36 @@ public final class SoulseekClient: @unchecked Sendable {
                 self.closePeer(link, failed: true)
                 return
             }
-            self.startPeerConnection(link, address: address, firstFrame: PeerInitMessage.peerInit(username: self.username, type: "P").frame)
+            if address.port > 0, address.port <= 65535 {
+                self.startPeerConnection(link, address: address, firstFrame: PeerInitMessage.peerInit(username: self.username, type: "P").frame)
+            } else {
+                link.directFailed = true
+            }
             // At the same time, ask the server to have them connect to us, in case they can't be
             // reached directly. Whichever connection comes up first is used.
             if self.listenerReady, !link.isReady, !link.isClosed {
                 link.indirectToken = self.requestIndirect(.peer(link), username: username, type: .peer)
             }
+            if link.directFailed, link.indirectToken == nil, !link.isReady {
+                self.log("\(username) can't be reached")
+                self.closePeer(link, failed: true)
+            }
+        }
+    }
+
+    /// Sends frames on a peer connection, keeping count of what hasn't gone out yet. A peer that
+    /// stops reading while asking for more gets disconnected instead of filling our memory.
+    private func send(_ frames: [Data], on link: PeerLink, connection: NWConnection) {
+        link.lastActivity = Date()
+        for frame in frames {
+            link.unsentBytes += frame.count
+            connection.send(content: frame, completion: .contentProcessed { [weak link] _ in
+                link?.unsentBytes -= frame.count
+            })
+        }
+        if link.unsentBytes > Incoming.maxUnsentBytes {
+            log("Closed the connection to \(link.username): it stopped reading")
+            closePeer(link, failed: false)
         }
     }
 
@@ -544,6 +579,8 @@ public final class SoulseekClient: @unchecked Sendable {
             existing.failureHandlers.removeAll()
             closePeer(existing, failed: false)
         }
+        link.limited = true
+        link.frames = FrameBuffer(limit: Incoming.peerFrameLimit)
         peers[username] = link
         startPeerConnection(link, address: PeerAddress(ip: ip, port: port),
                             firstFrame: PeerInitMessage.pierceFirewall(token: token).frame,
@@ -591,14 +628,11 @@ public final class SoulseekClient: @unchecked Sendable {
     /// A peer connection came up (ours, or theirs answering our request): send what's waiting
     /// and start reading. `leftover` is data that arrived along with their first message.
     private func activatePeerLink(_ link: PeerLink, connection: NWConnection, firstFrame: Data?, leftover: Data = Data()) {
-        if let token = link.indirectToken {
-            indirectRequests[token] = nil
-            link.indirectToken = nil
-        }
-        if let firstFrame { connection.send(content: firstFrame, completion: .contentProcessed { _ in }) }
+        // If the peer also answers our ConnectToPeer request, that connection is kept as a second
+        // one (some clients send over it), so the request stays open until it times out.
+        link.indirectToken = nil
         link.isReady = true
-        link.lastActivity = Date()
-        link.outbox.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
+        send((firstFrame.map { [$0] } ?? []) + link.outbox, on: link, connection: connection)
         link.outbox.removeAll()
         link.failureHandlers.removeAll()
         let sent = link.sentHandlers
@@ -638,7 +672,7 @@ public final class SoulseekClient: @unchecked Sendable {
         guard !link.isClosed else { return }
         link.frames.append(data)
         link.lastActivity = Date()
-        if link.incoming, incomingBufferedBytes() > Incoming.bufferedBudget {
+        if link.limited, limitedBufferedBytes() > Incoming.bufferedBudget {
             log("Closed the connection from \(link.username): too much data at once")
             closePeer(link, failed: false)
             return
@@ -653,8 +687,24 @@ public final class SoulseekClient: @unchecked Sendable {
                 closePeer(link, failed: false)
                 return
             }
+            // On connections others opened, look at what a message is before unpacking it, and
+            // skip compressed ones nobody asked for.
+            if link.limited, let code = Self.messageCode(body) {
+                switch code {
+                case 5:
+                    // A whole share list: we never ask anyone for one.
+                    closePeer(link, failed: false)
+                    return
+                case 9 where activeSearches.isEmpty:
+                    continue
+                case 37 where !folderBrowses.values.contains(where: { $0.username == link.username }):
+                    continue
+                default:
+                    break
+                }
+            }
             do {
-                let message = try PeerMessage.decode(body, inflateLimit: link.incoming ? Incoming.inflateLimit : Zlib.defaultLimit)
+                let message = try PeerMessage.decode(body, inflateLimit: link.limited ? Incoming.inflateLimit : Zlib.defaultLimit)
                 routePeerMessage(link, message)
             } catch {
                 log("Couldn't decode message from \(link.username): \(error)")
@@ -677,12 +727,20 @@ public final class SoulseekClient: @unchecked Sendable {
         replyLink = previous
     }
 
+    /// Messages that start, accept, change or cancel transfers.
     private static func needsVerifiedSender(_ message: PeerMessage) -> Bool {
         switch message {
-        case let .transferRequest(direction, _, _, _): return direction == .upload
-        case .uploadDenied, .uploadFailed, .placeInQueueResponse: return true
-        default: return false
+        case .transferRequest, .transferResponse, .queueUpload, .uploadDenied, .uploadFailed, .placeInQueueResponse:
+            return true
+        default:
+            return false
         }
+    }
+
+    private static func messageCode(_ body: Data) -> UInt32? {
+        guard body.count >= 4 else { return nil }
+        let bytes = [UInt8](body.prefix(4))
+        return UInt32(bytes[0]) | UInt32(bytes[1]) << 8 | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
     }
 
     private func handlePeerMessage(from username: String, _ message: PeerMessage) {
@@ -696,7 +754,7 @@ public final class SoulseekClient: @unchecked Sendable {
                 acceptIncomingTransfer(from: username, token: token, filename: filename, size: size)
             } else {
                 // Legacy download request (slskd, Seeker). Nicotine+ answers "Queued" and queues it.
-                sendToPeer(username, [.transferResponse(token: token, allowed: false, reason: "Queued", size: nil)])
+                sendToPeer(username, [.transferResponse(token: token, allowed: false, reason: "Queued", size: nil)], asReply: true)
                 enqueueUpload(for: username, path: filename)
             }
 
@@ -738,29 +796,33 @@ public final class SoulseekClient: @unchecked Sendable {
             }
 
         case .sharedFileListRequest:
-            // Packing the whole list is the most work a peer can ask of us: once per 20 s each.
+            // Packing the whole list is the most work a peer can ask of us: once per 20 s each, and
+            // a few a minute from everyone together (usernames cost nothing to make up).
             let now = Date()
             if let last = lastShareListReply[username], now.timeIntervalSince(last) < 20 { return }
+            guard allowRequest("shares", limit: 4, window: 60) else { return }
             if lastShareListReply.count > 500 {
                 lastShareListReply = lastShareListReply.filter { now.timeIntervalSince($0.value) < 20 }
             }
             lastShareListReply[username] = now
-            sendToPeer(username, [.sharedFileListResponse(folders: sharedFolders())])
+            sendToPeer(username, [.sharedFileListResponse(folders: sharedFolders())], asReply: true)
 
         case .userInfoRequest:
+            guard allowRequest("info", limit: 40, window: 10) else { return }
             sendToPeer(username, [.userInfoResponse(description: "colon3 (iOS)",
                                                     totalUploads: completedUploads,
                                                     queueSize: UInt32(uploadQueue.count),
-                                                    slotsFree: activeUpload == nil && sharingAllowed)])
+                                                    slotsFree: activeUpload == nil && sharingAllowed)], asReply: true)
 
         case let .placeInQueueRequest(filename):
             if let index = uploadQueue.firstIndex(where: { $0.username == username && $0.path == filename }) {
-                sendToPeer(username, [.placeInQueueResponse(filename: filename, place: UInt32(index + 1))])
+                sendToPeer(username, [.placeInQueueResponse(filename: filename, place: UInt32(index + 1))], asReply: true)
             }
 
         case let .folderContentsRequest(token, folder):
+            guard allowRequest("folder", limit: 40, window: 10) else { return }
             let folders = sharedFolders().filter { $0.name == folder || $0.name.hasPrefix(folder + "\\") }
-            sendToPeer(username, [.folderContentsResponse(token: token, folder: folder, folders: folders)])
+            sendToPeer(username, [.folderContentsResponse(token: token, folder: folder, folders: folders)], asReply: true)
 
         case let .folderContentsResponse(token, _, folders):
             guard let browse = folderBrowses[token], browse.username == username else { return }
@@ -797,12 +859,12 @@ public final class SoulseekClient: @unchecked Sendable {
     private func acceptIncomingTransfer(from username: String, token: UInt32, filename: String, size: UInt64?) {
         let id = DownloadID(username: username, path: filename)
         guard var record = downloads[id] else {
-            sendToPeer(username, [.transferResponse(token: token, allowed: false, reason: "Cancelled", size: nil)])
+            sendToPeer(username, [.transferResponse(token: token, allowed: false, reason: "Cancelled", size: nil)], asReply: true)
             return
         }
         switch record.state {
         case .completed, .transferring:
-            sendToPeer(username, [.transferResponse(token: token, allowed: false, reason: "Cancelled", size: nil)])
+            sendToPeer(username, [.transferResponse(token: token, allowed: false, reason: "Cancelled", size: nil)], asReply: true)
             return
         default:
             break
@@ -814,11 +876,12 @@ public final class SoulseekClient: @unchecked Sendable {
         record.state = .starting
         downloads[id] = record
         downloadsByToken[tokenKey(username, token)] = id
-        sendToPeer(username, [.transferResponse(token: token, allowed: true, reason: nil, size: nil)])
+        sendToPeer(username, [.transferResponse(token: token, allowed: true, reason: nil, size: nil)], asReply: true)
         emitDownload(id)
 
         queue.asyncAfter(deadline: .now() + 60) { [weak self] in
             guard let self, let current = self.downloads[id], current.token == token, current.state == .starting else { return }
+            self.downloadsByToken[self.tokenKey(username, token)] = nil
             self.downloads[id]?.state = .failed("\(username) never opened the file connection")
             self.emitDownload(id)
         }
@@ -829,6 +892,11 @@ public final class SoulseekClient: @unchecked Sendable {
         let connection = NWConnection(host: NWEndpoint.Host(ip), port: nwPort, using: Self.tcpParameters(timeout: 8))
         let link = FileLink(username: username, connection: connection, role: .awaitingToken)
         fileLinks[ObjectIdentifier(link)] = link
+        // Anyone can ask the server for one of these; don't let it sit without a transfer token.
+        queue.asyncAfter(deadline: .now() + 20) { [weak self, weak link] in
+            guard let self, let link, !link.isClosed, case .awaitingToken = link.role else { return }
+            self.closeFile(link, reason: nil)
+        }
 
         connection.stateUpdateHandler = { [weak self, weak link] state in
             guard let self, let link, !link.isClosed else { return }
@@ -858,6 +926,27 @@ public final class SoulseekClient: @unchecked Sendable {
         case .awaitingToken:
             link.pending.append(data)
             guard link.pending.count >= 4 else { return }
+            guard link.pending.count <= 64 * 1024 else {
+                closeFile(link, reason: nil)
+                return
+            }
+            // A file connection someone opened to us directly: only from where the server says
+            // that user is (anyone can claim a username).
+            if let address = link.address, lastKnownIPs[link.username] != address {
+                guard !link.checkingAddress else { return }
+                link.checkingAddress = true
+                resolveAddress(link.username) { [weak self, weak link] _ in
+                    guard let self, let link, !link.isClosed else { return }
+                    link.checkingAddress = false
+                    guard self.lastKnownIPs[link.username] == address else {
+                        self.log("Refused a file connection from someone claiming to be \(link.username) (\(address))")
+                        self.closeFile(link, reason: nil)
+                        return
+                    }
+                    self.handleFileData(link, Data())
+                }
+                return
+            }
             var reader = ByteReader(link.pending)
             guard let token = try? reader.u32() else { return }
             let leftover = reader.rest()
@@ -873,7 +962,9 @@ public final class SoulseekClient: @unchecked Sendable {
     }
 
     private func beginReceivingFile(_ link: FileLink, token: UInt32, leftover: Data) {
-        guard let id = downloadsByToken[tokenKey(link.username, token)], var record = downloads[id] else {
+        // Only a transfer we just agreed to and that hasn't started.
+        guard let id = downloadsByToken[tokenKey(link.username, token)], var record = downloads[id],
+              record.state == .starting else {
             log("Unexpected file connection from \(link.username)")
             closeFile(link, reason: nil)
             return
@@ -919,19 +1010,22 @@ public final class SoulseekClient: @unchecked Sendable {
     }
 
     private func writeChunk(_ data: Data, link: FileLink, id: DownloadID) {
-        guard let handle = link.handle, downloads[id] != nil else {
+        guard let handle = link.handle, let current = downloads[id] else {
             closeFile(link, reason: nil)
             return
         }
+        // Never write past the file's size, whatever the sender sends.
+        let remaining = current.size > current.received ? current.size - current.received : 0
+        let chunk = UInt64(data.count) > remaining ? data.prefix(Int(remaining)) : data
         do {
-            try handle.write(contentsOf: data)
+            try handle.write(contentsOf: chunk)
         } catch {
             downloads[id]?.state = .failed("Write failed: \(error.localizedDescription)")
             emitDownload(id)
             closeFile(link, reason: nil)
             return
         }
-        downloads[id]?.received += UInt64(data.count)
+        downloads[id]?.received += UInt64(chunk.count)
         guard let record = downloads[id] else { return }
 
         if record.received >= record.size {
@@ -1024,14 +1118,14 @@ public final class SoulseekClient: @unchecked Sendable {
 
     private func enqueueUpload(for username: String, path: String) {
         guard let share = shares[path] else {
-            sendToPeer(username, [.uploadDenied(filename: path, reason: "File not shared.")])
+            sendToPeer(username, [.uploadDenied(filename: path, reason: "File not shared.")], asReply: true)
             return
         }
         if activeUpload?.username == username && activeUpload?.path == path { return }
         if uploadQueue.contains(where: { $0.username == username && $0.path == path }) { return }
         let fromUser = uploadQueue.lazy.filter { $0.username == username }.count
         guard fromUser < Incoming.maxQueuedPerUser, uploadQueue.count < Incoming.maxQueuedTotal else {
-            sendToPeer(username, [.uploadDenied(filename: path, reason: "Too many files")])
+            sendToPeer(username, [.uploadDenied(filename: path, reason: "Too many files")], asReply: true)
             return
         }
         uploadQueue.append(UploadJob(username: username, path: path, share: share))
@@ -1129,6 +1223,7 @@ public final class SoulseekClient: @unchecked Sendable {
         if sendPeerInit { writer.raw(PeerInitMessage.peerInit(username: username, type: "F").frame) }
         writer.u32(attempt.token)  // FileTransferInit
         connection.send(content: writer.data, completion: .contentProcessed { _ in })
+        watchUpload(link, lastSent: 0, since: Date())
         if !leftover.isEmpty { handleFileData(link, leftover) }
         guard !link.isClosed else { return }
         receive(on: connection, onData: { [weak self, weak link] data in
@@ -1138,6 +1233,22 @@ public final class SoulseekClient: @unchecked Sendable {
             guard let self, let link else { return }
             self.closeFile(link, reason: nil)
         })
+    }
+
+    /// Ends an upload whose downloader stops answering, so it can't hold our only upload slot:
+    /// no offset within 30 s, no progress for 2 minutes, or no goodbye a minute after the last byte.
+    private func watchUpload(_ link: FileLink, lastSent: UInt64, since: Date) {
+        queue.asyncAfter(deadline: .now() + 15) { [weak self, weak link] in
+            guard let self, let link, !link.isClosed else { return }
+            let now = Date()
+            let progressed = link.sentBytes != lastSent
+            let limit: TimeInterval = link.uploadDone ? 60 : (link.handle == nil ? 30 : 120)
+            if !progressed, now.timeIntervalSince(since) >= limit {
+                self.closeFile(link, reason: nil)
+                return
+            }
+            self.watchUpload(link, lastSent: link.sentBytes, since: progressed ? now : since)
+        }
     }
 
     /// Gives up on an upload once neither connection can come up.
@@ -1223,7 +1334,25 @@ public final class SoulseekClient: @unchecked Sendable {
         startNextUpload()
     }
 
+    /// At most `limit` requests of this kind per `window` seconds from everyone together; the
+    /// rest are ignored.
+    private func allowRequest(_ kind: String, limit: Int, window: TimeInterval) -> Bool {
+        let now = Date()
+        var times = requestTimes[kind, default: []].filter { now.timeIntervalSince($0) < window }
+        let allowed = times.count < limit
+        if allowed { times.append(now) }
+        requestTimes[kind] = times
+        return allowed
+    }
+
     private func sharedFolders() -> [SharedFolder] {
+        if let cached = sharedFoldersCache { return cached }
+        let folders = buildSharedFolders()
+        sharedFoldersCache = folders
+        return folders
+    }
+
+    private func buildSharedFolders() -> [SharedFolder] {
         var grouped: [String: [SharedFile]] = [:]
         for share in shares.values {
             let parts = Self.splitVirtualPath(share.virtualPath)
@@ -1432,19 +1561,23 @@ public final class SoulseekClient: @unchecked Sendable {
             }
             switch type {
             case ConnectionType.peer.rawValue:
-                guard incomingLinks.count < Incoming.maxPeerLinks, promotePending(pending) else {
+                guard promotePending(pending) else {
                     dropPending(pending)
                     return
                 }
                 countAccepted()
-                acceptIncomingPeer(username: username, connection: pending.connection, address: pending.address, leftover: leftover)
+                acceptIncomingPeer(username: username, connection: pending.connection, address: pending.address,
+                                   trusted: nil, leftover: leftover)
             case ConnectionType.file.rawValue:
-                guard fileLinks.count < Incoming.maxFileLinks, promotePending(pending) else {
+                let incomingFiles = fileLinks.values.filter(\.incoming)
+                guard incomingFiles.count < Incoming.maxFileLinks,
+                      incomingFiles.filter({ $0.address == pending.address }).count < Incoming.maxPerAddress,
+                      promotePending(pending) else {
                     dropPending(pending)
                     return
                 }
                 countAccepted()
-                acceptIncomingFile(username: username, connection: pending.connection, leftover: leftover)
+                acceptIncomingFile(username: username, connection: pending.connection, address: pending.address, leftover: leftover)
             default:
                 // Distributed search connections: we don't take part in that network.
                 dropPending(pending)
@@ -1459,13 +1592,18 @@ public final class SoulseekClient: @unchecked Sendable {
 
     /// A peer opened a P connection to us directly. They can claim any username, so it starts out
     /// untrusted (see `routePeerMessage`) unless we've already confirmed them at this address.
-    private func acceptIncomingPeer(username: String, connection: NWConnection, address: String, leftover: Data) {
+    /// `trusted`: nil to go by whether the server confirmed this user at this address recently.
+    private func acceptIncomingPeer(username: String, connection: NWConnection, address: String, trusted: Bool?, leftover: Data) {
+        makeRoomForIncomingPeer(from: address)
         let link = PeerLink(username: username)
         link.connection = connection
         link.incoming = true
+        link.limited = true
         link.address = address
         link.frames = FrameBuffer(limit: Incoming.peerFrameLimit)
-        if let confirmed = verifiedPeers[username + "|" + address], Date().timeIntervalSince(confirmed) < Incoming.verifiedFor {
+        if let trusted {
+            link.trusted = trusted
+        } else if let confirmed = verifiedPeers[username + "|" + address], Date().timeIntervalSince(confirmed) < Incoming.verifiedFor {
             link.trusted = true
         } else {
             link.trusted = false
@@ -1490,11 +1628,27 @@ public final class SoulseekClient: @unchecked Sendable {
         })
     }
 
+    /// Keeps at most a few connections per address and a cap overall by closing the quietest,
+    /// so nobody can hold every slot and newcomers still get in.
+    private func makeRoomForIncomingPeer(from address: String) {
+        let fromAddress = incomingLinks.values.filter { $0.address == address }
+        if fromAddress.count >= Incoming.maxPerAddress, let oldest = fromAddress.min(by: { $0.lastActivity < $1.lastActivity }) {
+            closePeer(oldest, failed: false)
+        }
+        if incomingLinks.count >= Incoming.maxPeerLinks,
+           let oldest = incomingLinks.values.min(by: { $0.lastActivity < $1.lastActivity }) {
+            closePeer(oldest, failed: false)
+        }
+    }
+
     /// The peer connected to us for a P connection we asked for. Our own attempt (if still
-    /// trying) is dropped, and queued messages go out over this one.
+    /// trying) is dropped, and queued messages go out over this one. If ours already came up,
+    /// theirs is kept as a second connection: some clients send over it.
     private func adoptPiercedPeer(_ link: PeerLink, token: UInt32, connection: NWConnection, leftover: Data) {
         guard !link.isClosed, !link.isReady, link.indirectToken == token else {
-            connection.cancel()
+            // The token proves it's them.
+            acceptIncomingPeer(username: link.username, connection: connection, address: Self.remoteAddress(of: connection),
+                               trusted: true, leftover: leftover)
             return
         }
         link.indirectToken = nil
@@ -1524,14 +1678,18 @@ public final class SoulseekClient: @unchecked Sendable {
 
     /// A peer opened a file connection to us to send a file we're downloading. The transfer token
     /// they send next must match one we agreed to with that user, or it's closed.
-    private func acceptIncomingFile(username: String, connection: NWConnection, leftover: Data) {
+    private func acceptIncomingFile(username: String, connection: NWConnection, address: String, leftover: Data) {
         let link = FileLink(username: username, connection: connection, role: .awaitingToken)
+        link.incoming = true
+        // Checked against where the server says this user is before any data is accepted.
+        link.address = address
         fileLinks[ObjectIdentifier(link)] = link
         connection.stateUpdateHandler = { [weak self, weak link] state in
             guard let self, let link, !link.isClosed else { return }
             if case .failed = state { self.closeFile(link, reason: "Connection lost") }
         }
-        queue.asyncAfter(deadline: .now() + Incoming.initTimeout) { [weak self, weak link] in
+        // Time for the token, and for asking the server where this user is.
+        queue.asyncAfter(deadline: .now() + 25) { [weak self, weak link] in
             guard let self, let link, !link.isClosed, case .awaitingToken = link.role else { return }
             self.closeFile(link, reason: nil)
         }
@@ -1577,6 +1735,17 @@ public final class SoulseekClient: @unchecked Sendable {
     /// held messages are handled and the connection is trusted from then on.
     private func verify(_ link: PeerLink) {
         guard !link.verifying, let address = link.address else { return }
+        let key = link.username + "|" + address
+        // Recently found not to be who they said, or too many checks at once (each one is a
+        // question to the server): close instead of asking again.
+        if let rejected = rejectedPeers[key], Date().timeIntervalSince(rejected) < Incoming.verifiedFor {
+            closePeer(link, failed: false)
+            return
+        }
+        guard allowRequest("verify", limit: 20, window: 10) else {
+            closePeer(link, failed: false)
+            return
+        }
         link.verifying = true
         resolveAddress(link.username) { [weak self, weak link] _ in
             guard let self, let link, !link.isClosed else { return }
@@ -1585,7 +1754,10 @@ public final class SoulseekClient: @unchecked Sendable {
             link.held.removeAll()
             // Compare the IP alone: the server reports port 0 for some reachable peers.
             guard self.lastKnownIPs[link.username] == address else {
-                self.log("Ignored transfer messages from someone claiming to be \(link.username) (\(address))")
+                self.log("Closed a connection from someone claiming to be \(link.username) (\(address))")
+                if self.rejectedPeers.count > 500 { self.rejectedPeers.removeAll() }
+                self.rejectedPeers[key] = Date()
+                self.closePeer(link, failed: false)
                 return
             }
             link.trusted = true
@@ -1615,8 +1787,11 @@ public final class SoulseekClient: @unchecked Sendable {
         }
     }
 
-    private func incomingBufferedBytes() -> Int {
-        incomingLinks.values.reduce(0) { $0 + $1.frames.bufferedCount }
+    /// Data waiting to be read on connections others opened, all together.
+    private func limitedBufferedBytes() -> Int {
+        var total = incomingLinks.values.reduce(0) { $0 + $1.frames.bufferedCount }
+        for link in peers.values where link.limited && !link.incoming { total += link.frames.bufferedCount }
+        return total
     }
 
     private static func isPlausibleUsername(_ name: String) -> Bool {
@@ -1696,6 +1871,10 @@ private final class PeerLink {
     var failureHandlers: [() -> Void] = []
     /// Opened by the peer rather than by us.
     var incoming = false
+    /// Opened because someone asked (on our port, or through the server): smaller limits.
+    var limited = false
+    /// Bytes handed to the connection that haven't gone out yet.
+    var unsentBytes = 0
     /// False for a direct connection from someone the server hasn't confirmed yet.
     var trusted = true
     /// The remote IP, for connections peers opened to us.
@@ -1729,6 +1908,11 @@ private final class FileLink {
     var uploadDone = false
     var sentBytes: UInt64 = 0
     var lastProgress = Date.distantPast
+    /// Opened by the peer on our port.
+    var incoming = false
+    /// For connections peers opened to us: their IP, until it's matched against the server's.
+    var address: String?
+    var checkingAddress = false
 
     init(username: String, connection: NWConnection, role: Role) {
         self.username = username
@@ -1755,15 +1939,18 @@ private struct FolderBrowse {
 
 /// Limits for connections peers open to us.
 private enum Incoming {
-    static let maxPending = 24
+    static let maxPending = 64
     static let maxPendingPerAddress = 4
-    static let initTimeout: TimeInterval = 10
+    static let initTimeout: TimeInterval = 6
     static let initFrameLimit = 4096
     static let maxPeerLinks = 64
     static let maxFileLinks = 24
+    /// Identified connections from one address, of each kind.
+    static let maxPerAddress = 4
     static let peerFrameLimit = 16 * 1024 * 1024
-    static let inflateLimit = 32 * 1024 * 1024
+    static let inflateLimit = 8 * 1024 * 1024
     static let bufferedBudget = 48 * 1024 * 1024
+    static let maxUnsentBytes = 8 * 1024 * 1024
     static let idleTimeout: TimeInterval = 300
     static let indirectTimeout: TimeInterval = 20
     static let maxQueuedPerUser = 200

@@ -195,6 +195,8 @@ final class PortMappingTests: XCTestCase {
         XCTAssertEqual(PortTest.parse("2234/TCP CLOSED", port: 2234), false)
         XCTAssertEqual(PortTest.parse("2234/tcp filtered", port: 2234), false)
         XCTAssertNil(PortTest.parse("2235/tcp open", port: 2234))
+        XCTAssertNil(PortTest.parse("12234/tcp open", port: 2234))
+        XCTAssertEqual(PortTest.parse("12234/tcp open, 2234/tcp closed", port: 2234), false)
         XCTAssertNil(PortTest.parse("", port: 2234))
         XCTAssertEqual(PortTest.url(port: 2234).absoluteString, "https://www.slsknet.org/porttest.php?port=2234")
     }

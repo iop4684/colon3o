@@ -384,8 +384,17 @@ public enum PortTest {
     /// true: open, false: closed, nil: an answer we don't understand.
     public static func parse(_ body: String, port: UInt16) -> Bool? {
         let text = body.lowercased()
-        if text.contains("\(port)/tcp open") { return true }
-        if text.contains("\(port)/tcp closed") || text.contains("\(port)/tcp filtered") { return false }
+        /// "2234/tcp open", but not as the end of "12234/tcp open".
+        func says(_ phrase: String) -> Bool {
+            var searchStart = text.startIndex
+            while let range = text.range(of: phrase, range: searchStart..<text.endIndex) {
+                if range.lowerBound == text.startIndex || !text[text.index(before: range.lowerBound)].isNumber { return true }
+                searchStart = range.upperBound
+            }
+            return false
+        }
+        if says("\(port)/tcp open") { return true }
+        if says("\(port)/tcp closed") || says("\(port)/tcp filtered") { return false }
         return nil
     }
 }

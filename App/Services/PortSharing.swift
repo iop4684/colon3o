@@ -186,15 +186,18 @@ final class PortSharing: ObservableObject {
             scheduleRenewal(after: newMapping.renewAfter)
             if firstTime { await runCheck() }
         case let .failure(failure):
-            if renewing, mapping != nil {
-                // Keep the rule we have; try again sooner.
+            if renewing, let current = mapping, !current.hasExpired {
+                // The rule still holds for a while; try again sooner.
                 scheduleRenewal(after: 120)
                 return
             }
             mapping = nil
+            providerNote = nil
             failedAt = (wanted, port)
             router = .failed(failure.message)
             soulseek.client.setAdvertisedPort(0)
+            // Try again in a while; Try Again or a change of network does it sooner.
+            scheduleRetry(after: 10 * 60)
             // It may still be forwarded by hand.
             await runCheck()
         }
@@ -212,9 +215,18 @@ final class PortSharing: ObservableObject {
     private func scheduleRenewal(after seconds: TimeInterval) {
         renewal?.cancel()
         renewal = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(max(seconds, 60) * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(max(seconds, 15) * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             self.enqueue { await self.reconcile(renewing: true, retry: false) }
+        }
+    }
+
+    private func scheduleRetry(after seconds: TimeInterval) {
+        renewal?.cancel()
+        renewal = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.enqueue { await self.reconcile(renewing: false, retry: true) }
         }
     }
 
@@ -240,7 +252,15 @@ final class PortSharing: ObservableObject {
 enum PortMapper {
     /// One hour, renewed every 20 minutes while online.
     static let lease: UInt32 = 3600
-    static let description = "colon3o"
+    /// Names our UPnP rules, with an ID for this install so another phone's rule is never
+    /// mistaken for ours.
+    static let description: String = {
+        let key = "soulseek.portMappingID"
+        if let id = UserDefaults.standard.string(forKey: key) { return "colon3o " + id }
+        let id = String(UUID().uuidString.prefix(8)).lowercased()
+        UserDefaults.standard.set(id, forKey: key)
+        return "colon3o " + id
+    }()
 
     struct RouterInfo: Equatable {
         let gateway: String
@@ -267,9 +287,15 @@ enum PortMapper {
         /// Seconds; 0 means the router only does permanent rules.
         let lifetime: UInt32
         var externalIP: String?
+        var obtained = Date()
 
+        /// Halfway through the lease (at most 20 minutes), well before it runs out.
         var renewAfter: TimeInterval {
-            lifetime == 0 ? 30 * 60 : min(Double(lifetime) / 3, 20 * 60)
+            lifetime == 0 ? 30 * 60 : max(15, min(Double(lifetime) / 2, 20 * 60))
+        }
+
+        var hasExpired: Bool {
+            lifetime > 0 && Date().timeIntervalSince(obtained) >= Double(lifetime)
         }
     }
 
@@ -329,7 +355,8 @@ enum PortMapper {
         switch mapping.method {
         case .natpmp:
             let request = NATPMP.mapTCPRequest(internalPort: mapping.internalPort, externalPort: 0, lifetime: 0)
-            _ = await udp(to: mapping.router, port: NATPMP.port, payloads: [request], waits: [0.25, 0.5], collect: false) {
+            _ = await udp(to: mapping.router, port: NATPMP.port, payloads: [request], waits: [0.25, 0.5], collect: false,
+                          sameSourcePort: true) {
                 NATPMP.parseMapResponse($0) != nil
             }
         case let .upnp(service):
@@ -343,22 +370,25 @@ enum PortMapper {
 
     private static func mapWithNATPMP(port: UInt16, router: RouterInfo, lease: UInt32) async -> Result<Mapping, Failure> {
         let addressReplies = await udp(to: router, port: NATPMP.port, payloads: [NATPMP.publicAddressRequest],
-                                       waits: [0.25, 0.5, 1], collect: false) { NATPMP.parsePublicAddressResponse($0) != nil }
+                                       waits: [0.25, 0.5, 1], collect: false, sameSourcePort: true) {
+            NATPMP.parsePublicAddressResponse($0) != nil
+        }
         guard let addressReply = addressReplies.first.flatMap(NATPMP.parsePublicAddressResponse) else {
             return .failure(Failure(message: noNATPMP))
         }
         let request = NATPMP.mapTCPRequest(internalPort: port, externalPort: port, lifetime: lease)
-        let replies = await udp(to: router, port: NATPMP.port, payloads: [request], waits: [0.25, 0.5, 1, 2], collect: false) {
+        let replies = await udp(to: router, port: NATPMP.port, payloads: [request], waits: [0.25, 0.5, 1, 2], collect: false,
+                                sameSourcePort: true) {
             NATPMP.parseMapResponse($0)?.internalPort == port
         }
         guard let reply = replies.first.flatMap(NATPMP.parseMapResponse) else {
             return .failure(Failure(message: "The router stopped answering NAT-PMP"))
         }
-        guard reply.result == 0, reply.externalPort != 0 else {
+        guard reply.result == 0, reply.externalPort != 0, reply.lifetime > 0 else {
             return .failure(Failure(message: "NAT-PMP: " + NATPMP.describe(result: reply.result)))
         }
         return .success(Mapping(method: .natpmp, router: router, internalPort: port, externalPort: reply.externalPort,
-                                lifetime: max(reply.lifetime, 60),
+                                lifetime: reply.lifetime,
                                 externalIP: addressReply.result == 0 ? addressReply.address : nil))
     }
 
@@ -389,7 +419,7 @@ enum PortMapper {
                 let entry = try await soap(service, router: router, action: "GetSpecificPortMappingEntry",
                                            body: UPnP.getSpecificEntryBody(serviceType: service.type, externalPort: port))
                 let owner = UPnP.value("NewInternalClient", in: entry.text) ?? "another device"
-                guard UPnP.value("NewPortMappingDescription", in: entry.text)?.hasPrefix(description) == true else {
+                guard UPnP.value("NewPortMappingDescription", in: entry.text) == description else {
                     return .failure(Failure(message: "Port \(port) is already forwarded to \(owner) on the router."))
                 }
                 _ = try await soap(service, router: router, action: "DeletePortMapping",
@@ -420,7 +450,9 @@ enum PortMapper {
     /// UPnP description is, and reads the port-mapping service from it.
     private static func findUPnPService(router: RouterInfo) async -> UPnP.Service? {
         let requests = UPnP.searchTargets.map { UPnP.searchRequest(host: router.gateway, target: $0) }
-        let replies = await udp(to: router, port: UPnP.ssdpPort, payloads: requests, waits: [1.5, 1.5], collect: true) {
+        // Routers may answer M-SEARCH from another port, so only the address is checked here.
+        let replies = await udp(to: router, port: UPnP.ssdpPort, payloads: requests, waits: [1.5, 1.5], collect: true,
+                                sameSourcePort: false) {
             UPnP.location(fromSearchResponse: $0) != nil
         }
         var seen = Set<String>()
@@ -462,15 +494,15 @@ enum PortMapper {
     /// from another address is ignored). Each entry in `waits` is one round: send, then listen
     /// that long. `collect` keeps listening for more replies through the round.
     private static func udp(to router: RouterInfo, port: UInt16, payloads: [Data], waits: [TimeInterval], collect: Bool,
-                            accept: @escaping @Sendable (Data) -> Bool) async -> [Data] {
+                            sameSourcePort: Bool, accept: @escaping @Sendable (Data) -> Bool) async -> [Data] {
         await Task.detached(priority: .utility) {
             udpExchange(gateway: router.gateway, port: port, localIP: router.localIP, payloads: payloads,
-                        waits: waits, collect: collect, accept: accept)
+                        waits: waits, collect: collect, sameSourcePort: sameSourcePort, accept: accept)
         }.value
     }
 
     private static func udpExchange(gateway: String, port: UInt16, localIP: String, payloads: [Data],
-                                                waits: [TimeInterval], collect: Bool, accept: (Data) -> Bool) -> [Data] {
+                                    waits: [TimeInterval], collect: Bool, sameSourcePort: Bool, accept: (Data) -> Bool) -> [Data] {
         let socketFD = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard socketFD >= 0 else { return [] }
         defer { close(socketFD) }
@@ -519,7 +551,8 @@ enum PortMapper {
                     }
                 }
                 guard count > 0 else { break }
-                guard from.sin_addr.s_addr == remote.sin_addr.s_addr else { continue }
+                guard from.sin_addr.s_addr == remote.sin_addr.s_addr,
+                      !sameSourcePort || from.sin_port == remote.sin_port else { continue }
                 let data = Data(buffer[0..<count])
                 guard accept(data) else { continue }
                 replies.append(data)
