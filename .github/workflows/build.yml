@@ -37,7 +37,8 @@ jobs:
   build:
     name: Build and publish IPA
     needs: test
-    runs-on: macos-15
+    # Intel Macs while GitHub's Apple-chip ones are out of capacity (Nov 2026); back to macos-15 later.
+    runs-on: macos-15-intel
     permissions:
       contents: write
     steps:
