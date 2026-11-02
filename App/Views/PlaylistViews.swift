@@ -274,6 +274,23 @@ struct PlaylistDetailView: View {
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 12, trailing: 20))
 
+            if playlist != nil {
+                Button { addingSongs = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "plus")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.tint)
+                            .frame(width: 48, height: 48)
+                            .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        Text("Add Songs").foregroundStyle(.tint)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .moveDisabled(true)
+            }
+
             ForEach(Array(tracks.enumerated()), id: \.offset) { offset, track in
                 Button {
                     player.play(tracks, startAt: offset)
@@ -306,7 +323,7 @@ struct PlaylistDetailView: View {
         .listStyle(.plain)
         .navigationBarTitleDisplayMode(.inline)
         .overlay {
-            if tracks.isEmpty {
+            if tracks.isEmpty && playlist == nil {
                 EmptyStateView(title: "No Songs",
                                message: emptyMessage,
                                systemImage: "music.note.list")
@@ -482,52 +499,295 @@ struct AddToPlaylistSheet: View {
 }
 
 /// Pick songs from the library to add to a playlist.
+/// Add Songs: pick from all songs, or by album or artist (a whole one at once with its + button),
+/// with songs already in the playlist hidden. Picks are kept while you search and switch views,
+/// and added together.
 struct SongPickerSheet: View {
     let playlist: Playlist
+
+    enum Scope: String, CaseIterable, Identifiable {
+        case songs = "Songs", albums = "Albums", artists = "Artists"
+        var id: String { rawValue }
+    }
+
+    enum Order: String, CaseIterable, Identifiable {
+        case recent = "Recently Added", title = "Title", artist = "Artist"
+        var id: String { rawValue }
+    }
 
     @EnvironmentObject private var playlists: PlaylistStore
     @EnvironmentObject private var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var chosen: [String] = []
+    @AppStorage("songPicker.scope") private var scope: Scope = .songs
+    @AppStorage("songPicker.order") private var order: Order = .recent
+    @AppStorage("songPicker.hideAdded") private var hideAdded = true
 
-    private var results: [Track] {
-        let sorted = library.tracks.sorted { SortKey.less($0.title, $1.title) }
-        guard !query.isEmpty else { return sorted }
-        return sorted.filter {
-            $0.title.localizedCaseInsensitiveContains(query) || $0.artist.localizedCaseInsensitiveContains(query)
-                || ($0.album ?? "").localizedCaseInsensitiveContains(query)
-        }
-    }
+    /// Songs in the playlist now (it may change while the sheet is open).
+    private var included: Set<String> { Set((playlists.playlist(id: playlist.id) ?? playlist).trackIDs) }
 
     var body: some View {
+        let included = self.included
+        let picked = Set(chosen)
         NavigationStack {
-            List(results) { track in
-                let picked = chosen.contains(track.id)
-                let already = playlist.trackIDs.contains(track.id)
-                Button {
-                    if let index = chosen.firstIndex(of: track.id) { chosen.remove(at: index) } else { chosen.append(track.id) }
-                } label: {
-                    TrackRow(track: track, subtitle: track.artist, isSelected: picked || already)
+            Group {
+                switch scope {
+                case .songs:
+                    List {
+                        scopePicker
+                        songRows(sortedSongs(matching(library.tracks)), included: included, picked: picked)
+                        hiddenNote(included: included)
+                    }
+                case .albums:
+                    List {
+                        scopePicker
+                        ForEach(albums(included: included)) { album in
+                            groupRow(title: album.title, subtitle: album.artist, artwork: .album(album),
+                                     tracks: album.tracks, included: included, picked: picked) {
+                                PickerTrackList(title: album.title, tracks: album.tracks, numbered: true,
+                                                included: included, chosen: $chosen, hideAdded: hideAdded)
+                            }
+                        }
+                    }
+                case .artists:
+                    List {
+                        scopePicker
+                        ForEach(artists(included: included), id: \.name) { artist in
+                            let tracks = artistTracks(artist)
+                            groupRow(title: artist.name, subtitle: "\(tracks.count) song\(tracks.count == 1 ? "" : "s")",
+                                     artwork: artist.artwork, tracks: tracks, included: included, picked: picked) {
+                                PickerTrackList(title: artist.name, tracks: tracks, numbered: false,
+                                                included: included, chosen: $chosen, hideAdded: hideAdded)
+                            }
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(already)
             }
             .listStyle(.plain)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Songs, artists, albums")
-            .navigationTitle("Add Songs")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: scope == .songs ? "Songs, artists, albums" : (scope == .albums ? "Albums, artists" : "Artists"))
+            .navigationTitle("Add to \(playlist.name)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(chosen.isEmpty ? "Add" : "Add \(chosen.count)") {
-                        playlists.add(chosen.compactMap { library.track(id: $0) }, to: playlist)
-                        dismiss()
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Toggle("Hide Songs Already Added", isOn: $hideAdded)
+                        if scope == .songs {
+                            Picker("Sort By", selection: $order) {
+                                ForEach(Order.allCases) { Text($0.rawValue).tag($0) }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
                     }
-                    .disabled(chosen.isEmpty)
                 }
             }
         }
+        // Outside the navigation, so the Add button stays while you look inside an album or artist.
+        .safeAreaInset(edge: .bottom) {
+                if !chosen.isEmpty {
+                    HStack(spacing: 12) {
+                        Button("Clear") { chosen.removeAll() }
+                            .buttonStyle(.bordered)
+                        Button {
+                            playlists.add(chosen.compactMap { library.track(id: $0) }, to: playlist)
+                            dismiss()
+                        } label: {
+                            Text("Add \(chosen.count) Song\(chosen.count == 1 ? "" : "s")")
+                                .fontWeight(.semibold)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .controlSize(.large)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.bar)
+                }
+        }
+    }
+
+    private var scopePicker: some View {
+        Picker("View", selection: $scope) {
+            ForEach(Scope.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .listRowSeparator(.hidden)
+    }
+
+    @ViewBuilder
+    private func songRows(_ tracks: [Track], included: Set<String>, picked: Set<String>) -> some View {
+        ForEach(tracks.filter { !hideAdded || !included.contains($0.id) }) { track in
+            PickerSongRow(track: track, subtitle: [track.artist, track.album].compactMap { $0 }.joined(separator: " · "),
+                          isIncluded: included.contains(track.id), isPicked: picked.contains(track.id)) {
+                toggle(track.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func hiddenNote(included: Set<String>) -> some View {
+        let hidden = hideAdded ? library.tracks.filter { included.contains($0.id) }.count : 0
+        if hidden > 0 {
+            Text("\(hidden) song\(hidden == 1 ? " is" : "s are") already in this playlist and hidden.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .listRowSeparator(.hidden)
+        }
+    }
+
+    /// An album or artist: tap it to pick songs from it, or its button to pick all of it at once.
+    private func groupRow<Destination: View>(title: String, subtitle: String, artwork: ArtworkSource?, tracks: [Track],
+                                             included: Set<String>, picked: Set<String>,
+                                             @ViewBuilder destination: @escaping () -> Destination) -> some View {
+        let available = tracks.filter { !included.contains($0.id) }
+        let pickedCount = available.filter { picked.contains($0.id) }.count
+        let all = !available.isEmpty && pickedCount == available.count
+        return HStack(spacing: 12) {
+            NavigationLink {
+                destination()
+            } label: {
+                HStack(spacing: 12) {
+                    if let artwork {
+                        ArtworkView(source: artwork, size: 48, cornerRadius: 6)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).lineLimit(1)
+                        Text(pickedCount > 0 ? "\(subtitle) · \(pickedCount) picked" : subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            Button {
+                if all {
+                    let ids = Set(available.map(\.id))
+                    chosen.removeAll { ids.contains($0) }
+                } else {
+                    for track in available where !picked.contains(track.id) { chosen.append(track.id) }
+                }
+            } label: {
+                Image(systemName: available.isEmpty ? "checkmark.circle" : (all ? "checkmark.circle.fill" : (pickedCount > 0 ? "plus.circle.fill" : "plus.circle")))
+                    .font(.title2)
+                    .foregroundStyle(available.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+            }
+            .buttonStyle(.borderless)
+            .disabled(available.isEmpty)
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if let index = chosen.firstIndex(of: id) { chosen.remove(at: index) } else { chosen.append(id) }
+    }
+
+    private func matching(_ tracks: [Track]) -> [Track] {
+        let text = query.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return tracks }
+        return tracks.filter {
+            $0.title.localizedCaseInsensitiveContains(text) || $0.artist.localizedCaseInsensitiveContains(text)
+                || ($0.album ?? "").localizedCaseInsensitiveContains(text)
+        }
+    }
+
+    private func sortedSongs(_ tracks: [Track]) -> [Track] {
+        switch order {
+        case .recent: return tracks.sorted { $0.addedAt > $1.addedAt }
+        case .title: return tracks.sorted { SortKey.less($0.title, $1.title) }
+        case .artist:
+            return tracks.sorted {
+                $0.artist == $1.artist ? SortKey.less($0.title, $1.title) : SortKey.less($0.artist, $1.artist)
+            }
+        }
+    }
+
+    private func albums(included: Set<String>) -> [Album] {
+        let text = query.trimmingCharacters(in: .whitespaces)
+        return library.albums.filter { album in
+            (text.isEmpty || album.title.localizedCaseInsensitiveContains(text) || album.artist.localizedCaseInsensitiveContains(text))
+                && (!hideAdded || album.tracks.contains { !included.contains($0.id) })
+        }
+    }
+
+    private func artists(included: Set<String>) -> [ArtistEntry] {
+        let text = query.trimmingCharacters(in: .whitespaces)
+        return library.artists.filter { artist in
+            (text.isEmpty || artist.name.localizedCaseInsensitiveContains(text))
+                && (!hideAdded || artistTracks(artist).contains { !included.contains($0.id) })
+        }
+    }
+
+    private func artistTracks(_ artist: ArtistEntry) -> [Track] {
+        artist.albums.flatMap(\.tracks) + artist.singles
+    }
+}
+
+/// One album's or artist's songs inside Add Songs, picked one by one.
+private struct PickerTrackList: View {
+    let title: String
+    let tracks: [Track]
+    let numbered: Bool
+    let included: Set<String>
+    @Binding var chosen: [String]
+    let hideAdded: Bool
+
+    var body: some View {
+        let picked = Set(chosen)
+        let available = tracks.filter { !included.contains($0.id) }
+        List {
+            ForEach(tracks.filter { !hideAdded || !included.contains($0.id) }) { track in
+                PickerSongRow(track: track,
+                              subtitle: numbered ? track.artist : (track.album ?? ""),
+                              number: numbered ? track.trackNumber : nil,
+                              isIncluded: included.contains(track.id), isPicked: picked.contains(track.id)) {
+                    if let index = chosen.firstIndex(of: track.id) { chosen.remove(at: index) } else { chosen.append(track.id) }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                let all = !available.isEmpty && available.allSatisfy { picked.contains($0.id) }
+                Button(all ? "Deselect All" : "Select All") {
+                    if all {
+                        let ids = Set(available.map(\.id))
+                        chosen.removeAll { ids.contains($0) }
+                    } else {
+                        for track in available where !picked.contains(track.id) { chosen.append(track.id) }
+                    }
+                }
+                .disabled(available.isEmpty)
+            }
+        }
+    }
+}
+
+/// A song in Add Songs: tap to pick it; songs already in the playlist are marked and can't be picked.
+private struct PickerSongRow: View {
+    let track: Track
+    let subtitle: String
+    var number: Int?
+    let isIncluded: Bool
+    let isPicked: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 12) {
+                Image(systemName: isIncluded ? "checkmark.circle" : (isPicked ? "checkmark.circle.fill" : "circle"))
+                    .font(.title3)
+                    .foregroundStyle(isPicked ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.secondary))
+                TrackRow(track: track, number: number, showArtwork: number == nil, subtitle: isIncluded ? "In this playlist" : subtitle)
+                    .opacity(isIncluded ? 0.5 : 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isIncluded)
     }
 }
 
