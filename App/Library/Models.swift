@@ -111,9 +111,12 @@ enum ArtworkSource: Hashable {
     case track(Track)
     /// A free-text "artist album" query, looked up online (search results, downloads).
     case remote(String)
+    /// A playlist's own picture, only when one was chosen with Change Artwork.
+    case playlist(UUID)
 
     var key: String {
         switch self {
+        case let .playlist(id): return "playlist:" + id.uuidString
         case let .album(album): return "album:" + album.id
         case let .track(track): return "track:" + track.id
         case let .remote(query): return "remote:" + query.lowercased()

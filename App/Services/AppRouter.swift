@@ -10,6 +10,7 @@ enum AppTab: String, Hashable {
 enum ArtworkTarget: Identifiable {
     case album(Album)
     case track(Track)
+    case playlist(Playlist)
 
     var id: String { source.key }
 
@@ -17,6 +18,7 @@ enum ArtworkTarget: Identifiable {
         switch self {
         case let .album(album): return .album(album)
         case let .track(track): return .track(track)
+        case let .playlist(playlist): return .playlist(playlist.id)
         }
     }
 
@@ -24,6 +26,7 @@ enum ArtworkTarget: Identifiable {
         switch self {
         case let .album(album): return album.title
         case let .track(track): return track.title
+        case let .playlist(playlist): return playlist.name
         }
     }
 }

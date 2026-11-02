@@ -144,6 +144,9 @@ actor ArtworkStore {
 
         case let .remote(query):
             return await online(query: query, entity: "album", cacheKey: source.key)
+
+        case .playlist:
+            return nil  // the chosen picture was returned above; otherwise the mosaic is drawn
         }
     }
 

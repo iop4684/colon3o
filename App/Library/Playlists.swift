@@ -51,6 +51,7 @@ final class PlaylistStore: ObservableObject {
     func delete(_ playlist: Playlist) {
         playlists.removeAll { $0.id == playlist.id }
         save()
+        try? FileManager.default.removeItem(at: ArtworkStore.overrideURL(for: .playlist(playlist.id)))
     }
 
     /// Returns how many were added; songs already in the playlist are skipped.

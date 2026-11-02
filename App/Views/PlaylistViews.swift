@@ -5,6 +5,11 @@ enum PlaylistRoute: Hashable {
     case user(UUID)
     case favorites
     case mostPlayed
+
+    var playlistID: UUID? {
+        if case let .user(id) = self { return id }
+        return nil
+    }
 }
 
 /// The Playlists scope of the library: smart lists first, then the user's own.
@@ -59,6 +64,7 @@ struct PlaylistsListContent: View {
                 let tracks = playlists.tracks(of: playlist, in: library)
                 row(route: .user(playlist.id), name: playlist.name, tracks: tracks, symbol: nil)
                     .contextMenu {
+                        ArtworkMenu(target: .playlist(playlist))
                         Button { player.play(tracks) } label: {
                             Label("Play", systemImage: "play")
                         }
@@ -121,7 +127,7 @@ struct PlaylistsListContent: View {
     private func row(route: PlaylistRoute, name: String, tracks: [Track], symbol: String?, subtitle: String? = nil) -> some View {
         NavigationLink(value: route) {
             HStack(spacing: 14) {
-                PlaylistArtwork(tracks: tracks, symbol: symbol, size: 64)
+                PlaylistArtwork(tracks: tracks, symbol: symbol, playlistID: route.playlistID, size: 64)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name).lineLimit(1)
                     Text(subtitle ?? "\(tracks.count) song\(tracks.count == 1 ? "" : "s")")
@@ -142,10 +148,13 @@ struct PlaylistsListContent: View {
     }
 }
 
-/// A 2×2 mosaic of the first four different covers, like Apple Music.
+/// A 2×2 mosaic of the first four different covers, like Apple Music, or the picture chosen with
+/// Change Artwork.
 struct PlaylistArtwork: View {
     let tracks: [Track]
     var symbol: String?
+    /// A user playlist, whose own picture (if one was chosen) replaces the mosaic.
+    var playlistID: UUID?
     let size: CGFloat
 
     @EnvironmentObject private var library: LibraryStore
@@ -163,8 +172,11 @@ struct PlaylistArtwork: View {
 
     var body: some View {
         let covers = sources
+        let _ = library.artworkRevision  // redraw when a picture is chosen or removed
         Group {
-            if let symbol {
+            if let playlistID, ArtworkStore.hasOverride(for: .playlist(playlistID)) {
+                ArtworkView(source: .playlist(playlistID), size: size, cornerRadius: 0)
+            } else if let symbol {
                 ZStack {
                     Rectangle().fill(.tint)
                     LinearGradient(colors: [.white.opacity(0.18), .black.opacity(0.3)],
@@ -295,6 +307,7 @@ struct PlaylistDetailView: View {
                             newName = playlist.name
                             renaming = true
                         } label: { Label("Rename", systemImage: "pencil") }
+                        ArtworkMenu(target: .playlist(playlist))
                         Button {
                             exportURL = playlists.exportM3U(playlist, library: library).map(ExportFile.init)
                         } label: { Label("Export .m3u8", systemImage: "square.and.arrow.up") }
@@ -362,7 +375,7 @@ struct PlaylistDetailView: View {
     private func header(_ tracks: [Track]) -> some View {
         VStack(spacing: 10) {
             PlaylistArtwork(tracks: tracks, symbol: route == .favorites ? "star.fill" : (route == .mostPlayed ? "chart.bar.fill" : nil),
-                            size: 220)
+                            playlistID: route.playlistID, size: 220)
                 .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
             Text(name).font(.title2.weight(.bold)).multilineTextAlignment(.center)
             HStack(spacing: 12) {
@@ -421,7 +434,7 @@ struct AddToPlaylistSheet: View {
                         dismiss()
                     } label: {
                         HStack(spacing: 12) {
-                            PlaylistArtwork(tracks: playlists.tracks(of: playlist, in: library), size: 48)
+                            PlaylistArtwork(tracks: playlists.tracks(of: playlist, in: library), playlistID: playlist.id, size: 48)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(playlist.name).foregroundStyle(.primary)
                                 Text("\(playlist.trackIDs.count) songs").font(.caption).foregroundStyle(.secondary)
