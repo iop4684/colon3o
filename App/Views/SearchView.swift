@@ -192,6 +192,13 @@ struct FolderRow: View {
 struct FolderDetailView: View {
     let folderID: String
     @EnvironmentObject private var soulseek: SoulseekModel
+    @AppStorage(AppSettings.wholeFolderKey) private var alwaysWholeFolder = false
+
+    /// Songs in the folder the search didn't match, once fetched.
+    private var others: [SharedFile] {
+        if case let .loaded(files) = soulseek.folderListings[folderID] { return files }
+        return []
+    }
 
     var body: some View {
         if let folder = soulseek.folder(withID: folderID) {
@@ -212,9 +219,12 @@ struct FolderDetailView: View {
 
                 Section {
                     Button {
-                        soulseek.downloadFolder(folder)
+                        var whole = folder
+                        whole.files += others
+                        soulseek.downloadFolder(whole)
                     } label: {
-                        Label("Download All", systemImage: "arrow.down.circle.fill")
+                        Label(others.isEmpty ? "Download All" : "Download All \(folder.files.count + others.count) Files",
+                              systemImage: "arrow.down.circle.fill")
                     }
                     .disabled(!soulseek.isLoggedIn)
                 } footer: {
@@ -225,13 +235,66 @@ struct FolderDetailView: View {
                     ForEach(folder.files, id: \.path) { file in
                         FileRow(file: file, username: folder.username, folderImages: folder.images)
                     }
+                } header: {
+                    if soulseek.folderListings[folderID] != nil { Text("Matching Your Search") }
                 }
+
+                otherFiles(folder)
             }
             .navigationTitle(folder.name)
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                if alwaysWholeFolder, soulseek.isLoggedIn { soulseek.loadWholeFolder(folder) }
+            }
         } else {
             Text("This result is no longer available.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The rest of the folder: a button to fetch it, then its songs.
+    @ViewBuilder
+    private func otherFiles(_ folder: FolderResult) -> some View {
+        switch soulseek.folderListings[folderID] {
+        case nil:
+            Section {
+                Button {
+                    soulseek.loadWholeFolder(folder)
+                } label: {
+                    Label("Show Other Songs in Folder", systemImage: "folder")
+                }
+                .disabled(!soulseek.isLoggedIn)
+            } footer: {
+                Text("Search only lists the files that match your words. This asks \(folder.username) for the rest of the folder.")
+            }
+        case .some(.loading):
+            Section {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Asking \(folder.username) for the folder…").foregroundStyle(.secondary)
+                }
+            }
+        case .some(.failed):
+            Section {
+                Button {
+                    soulseek.loadWholeFolder(folder)
+                } label: {
+                    Label("Try Again", systemImage: "arrow.clockwise")
+                }
+            } footer: {
+                Text("\(folder.username) didn't send the folder's contents. They may be offline or not accepting connections.")
+            }
+        case .some(.loaded):
+            Section {
+                if others.isEmpty {
+                    Text("Nothing else in this folder.").foregroundStyle(.secondary)
+                }
+                ForEach(others, id: \.path) { file in
+                    FileRow(file: file, username: folder.username, folderImages: folder.images)
+                }
+            } header: {
+                Text("Other Songs in Folder")
+            }
         }
     }
 }
@@ -290,6 +353,7 @@ struct FileRow: View {
 struct SearchFiltersView: View {
     @EnvironmentObject private var soulseek: SoulseekModel
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(AppSettings.wholeFolderKey) private var wholeFolder = false
 
     var body: some View {
         NavigationStack {
@@ -323,6 +387,14 @@ struct SearchFiltersView: View {
                     Text("Availability")
                 } footer: {
                     Text("A minimum of around 6 files skips loose singles and finds complete albums.")
+                }
+
+                Section {
+                    Toggle("Show Whole Folders", isOn: $wholeFolder)
+                } header: {
+                    Text("Folders")
+                } footer: {
+                    Text("Search only lists the songs that match your words. When on, opening a result also asks for the other songs in its folder.")
                 }
 
                 Section {

@@ -112,6 +112,8 @@ final class SoulseekModel: ObservableObject {
     }
     /// Folders found but hidden by the filters.
     @Published private(set) var hiddenCount = 0
+    /// The rest of a result's folder (what the search didn't match), by result id, once asked for.
+    @Published private(set) var folderListings: [String: FolderListing] = [:]
     /// Set by the playlist importer while it works, so the app stays awake in the background
     /// between downloads too (see TransferMonitor).
     @Published var isImportingPlaylist = false
@@ -200,6 +202,7 @@ final class SoulseekModel: ObservableObject {
         results.removeAll()
         hiddenCount = 0
         responseCount = 0
+        folderListings.removeAll()
         searchToken = client.search(trimmed)
     }
 
@@ -255,6 +258,37 @@ final class SoulseekModel: ObservableObject {
 
     func folder(withID id: String) -> FolderResult? {
         results.first { $0.id == id }
+    }
+
+    enum FolderListing: Equatable {
+        case loading
+        /// Songs in the folder that the search didn't return, sorted by name.
+        case loaded([SharedFile])
+        case failed
+    }
+
+    /// Asks the sharer for the whole folder, so songs that didn't match the search show up too.
+    func loadWholeFolder(_ folder: FolderResult) {
+        if case .loading = folderListings[folder.id] { return }
+        if case .loaded = folderListings[folder.id] { return }
+        folderListings[folder.id] = .loading
+        client.browseFolder(username: folder.username, folder: folder.folder) { [weak self] files in
+            guard let self else { return }
+            guard let files else {
+                self.folderListings[folder.id] = .failed
+                return
+            }
+            self.completeness?.recordListing(username: folder.username, remoteFolder: folder.folder, files: files)
+            let known = Set(folder.files.map(\.path))
+            let others = files
+                .filter { $0.folder == folder.folder && !known.contains($0.path) }
+                // Same rule as the results: playable songs, or everything but pictures.
+                .filter { self.audioOnly
+                    ? LibraryStore.audioExtensions.contains($0.fileExtension)
+                    : !LibraryStore.imageExtensions.contains($0.fileExtension) }
+                .sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+            self.folderListings[folder.id] = .loaded(others)
+        }
     }
 
     private func flushResponses() {

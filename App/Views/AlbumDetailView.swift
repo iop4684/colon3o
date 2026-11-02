@@ -57,7 +57,6 @@ struct AlbumDetailView: View {
             let tracks = album.tracks.filter { ($0.discNumber ?? 1) == disc }
             rows[disc] = tracks.enumerated().map { offset, track in Row.track(track, number: track.trackNumber ?? offset + 1) }
         }
-        for entry in missing { rows[entry.disc, default: []].append(.missing(entry)) }
         return rows.keys.sorted().map { number in
             Disc(number: number, rows: (rows[number] ?? []).enumerated().sorted { lhs, rhs in
                 if lhs.element.sortNumber != rhs.element.sortNumber { return lhs.element.sortNumber < rhs.element.sortNumber }
@@ -134,29 +133,9 @@ struct AlbumDetailView: View {
                             .padding(.top, 18)
                             .padding(.bottom, 4)
                     }
-                    ForEach(disc.rows) { row in
-                        switch row {
-                        case let .track(track, number):
-                            Button {
-                                if let index = album.tracks.firstIndex(of: track) { player.play(album.tracks, startAt: index) }
-                            } label: {
-                                TrackRow(track: track, number: number, showArtwork: false,
-                                         subtitle: track.artist != album.artist ? track.artist : nil)
-                                    .padding(.horizontal, 20)
-                                    .padding(.vertical, 10)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                TrackMenuItems(tracks: [track]) { pendingDelete = $0 }
-                            }
-                        case let .missing(entry):
-                            MissingTrackRow(track: entry, album: album) { findingTrack = entry }
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 10)
-                        }
-                        Divider().padding(.leading, 56)
-                    }
+                    rows(disc.rows, album: album)
                 }
+                missingSection(album, showDiscs: showDiscs || Set(missing.map(\.disc)).count > 1)
             }
             .padding(.top, 16)
             .task(id: "\(album.id)#\(album.tracks.count)") { completeness.refresh(album) }
@@ -199,6 +178,58 @@ struct AlbumDetailView: View {
             // Leave the page once the whole album is gone.
             let remaining = Set(album.tracks.map(\.id)).subtracting(deleted.map(\.id))
             if remaining.isEmpty { dismiss() }
+        }
+    }
+
+    /// Song rows (yours, or the missing ones), each followed by a divider.
+    private func rows(_ rows: [Row], album: Album) -> some View {
+        ForEach(rows) { row in
+            switch row {
+            case let .track(track, number):
+                Button {
+                    if let index = album.tracks.firstIndex(of: track) { player.play(album.tracks, startAt: index) }
+                } label: {
+                    TrackRow(track: track, number: number, showArtwork: false,
+                             subtitle: track.artist != album.artist ? track.artist : nil)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    TrackMenuItems(tracks: [track]) { pendingDelete = $0 }
+                }
+            case let .missing(entry):
+                MissingTrackRow(track: entry, album: album) { findingTrack = entry }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+            }
+            Divider().padding(.leading, 56)
+        }
+    }
+
+    /// The songs you don't have, apart from yours below a gap, like a separate list.
+    @ViewBuilder
+    private func missingSection(_ album: Album, showDiscs: Bool) -> some View {
+        let entries = missing.sorted { ($0.disc, $0.number ?? 10_000) < ($1.disc, $1.number ?? 10_000) }
+        if !entries.isEmpty {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Missing Songs").font(.title3.weight(.bold))
+                Text("\(entries.count)").font(.subheadline).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 36)
+            .padding(.bottom, 6)
+            ForEach(Array(Dictionary(grouping: entries, by: \.disc).keys.sorted()), id: \.self) { disc in
+                if showDiscs {
+                    Text("Disc \(disc)")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
+                }
+                rows(entries.filter { $0.disc == disc }.map(Row.missing), album: album)
+            }
         }
     }
 

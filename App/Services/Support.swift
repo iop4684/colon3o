@@ -95,6 +95,8 @@ enum AppSettings {
     static let backgroundTransfersKey = "backgroundTransfers"
     static let transferActivityKey = "transferLiveActivity"
     static let showMissingKey = "showMissingSongs"
+    /// Search results: fetch the rest of a folder (songs that didn't match) when one is opened.
+    static let wholeFolderKey = "search.wholeFolder"
     static let musicBrainzKey = "musicBrainzLookup"
     static let autoplayKey = "autoplay"
     /// Defaults to off: autoplay may download songs it finds through Last.fm.
