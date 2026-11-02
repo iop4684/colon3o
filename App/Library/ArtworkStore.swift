@@ -84,6 +84,13 @@ actor ArtworkStore {
         memory.removeAllObjects()
     }
 
+    /// Covers looked for while the files couldn't be read (phone locked) were remembered as
+    /// missing; look for them again.
+    func forgetMisses() {
+        folderImages.removeAll()
+        missingEmbedded.removeAll()
+    }
+
     // MARK: Custom covers
 
     nonisolated static let overridesDirectory: URL = {

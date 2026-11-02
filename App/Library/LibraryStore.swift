@@ -1,5 +1,6 @@
 import Foundation
 import SoulseekKit
+import UIKit
 import UniformTypeIdentifiers
 
 /// Everything under Documents/Music. The folder is visible in the Files app, so music can also
@@ -29,6 +30,9 @@ final class LibraryStore: ObservableObject {
     private var albumByTrack: [String: Album] = [:]
     private var tracksByID: [String: Track] = [:]
     private var albumsByID: [String: Album] = [:]
+    /// A scan that suddenly found no songs at all, waiting to be confirmed by another.
+    private var suspiciousEmptyScans = 0
+    private var retryScheduled = false
 
     nonisolated private static var cacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -47,6 +51,31 @@ final class LibraryStore: ObservableObject {
         if let data = try? Data(contentsOf: Self.cacheURL),
            let decoded = try? JSONDecoder().decode([String: CachedEntry].self, from: data) {
             cache = decoded
+        }
+        // While the iPhone is locked its files can be unreadable; when they come back, look again
+        // (songs, and covers that couldn't be read in the meantime).
+        NotificationCenter.default.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.filesBecameReadable() }
+        }
+    }
+
+    private func filesBecameReadable() {
+        rescan()
+        Task {
+            await ArtworkStore.shared.forgetMisses()
+            self.artworkRevision += 1
+        }
+    }
+
+    /// Tries a scan again shortly (or as soon as the phone is unlocked).
+    private func scheduleRetry() {
+        guard !retryScheduled else { return }
+        retryScheduled = true
+        Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            self.retryScheduled = false
+            self.rescan()
         }
     }
 
@@ -131,6 +160,12 @@ final class LibraryStore: ObservableObject {
             rescanQueued = true
             return
         }
+        // Locked phone: the files may be unreadable, and a scan would see an empty library.
+        // filesBecameReadable() scans once they're back.
+        guard UIApplication.shared.isProtectedDataAvailable else {
+            Diagnostics.shared.log("Library scan put off: files are locked", category: "library")
+            return
+        }
         isScanning = true
         let root = self.root
         var known = cache
@@ -144,6 +179,22 @@ final class LibraryStore: ObservableObject {
     }
 
     private func apply(_ result: ScanResult) {
+        // Never trade a library for an empty scan that may only mean the folder couldn't be read
+        // (phone locked, storage busy). Keep what's shown and look again; a second empty scan with
+        // the folder readable means the songs really are gone.
+        let looksWrong = result.listingFailed || (result.tracks.isEmpty && !tracks.isEmpty
+            && (suspiciousEmptyScans == 0 || !UIApplication.shared.isProtectedDataAvailable))
+        if looksWrong {
+            Diagnostics.shared.log("Library scan found \(result.tracks.count) songs (folder readable: \(!result.listingFailed), "
+                                   + "files unlocked: \(UIApplication.shared.isProtectedDataAvailable)); keeping the "
+                                   + "\(tracks.count) already shown and trying again", category: "library")
+            suspiciousEmptyScans += 1
+            isScanning = false
+            rescanQueued = false
+            scheduleRetry()
+            return
+        }
+        suspiciousEmptyScans = 0
         cache = result.cache
         let grouped = Self.group(result.tracks, root: root)
         tracks = result.tracks
@@ -196,9 +247,14 @@ final class LibraryStore: ObservableObject {
         let tracks: [Track]
         let shares: [LocalShare]
         let cache: [String: CachedEntry]
+        /// The Music folder couldn't be listed at all.
+        var listingFailed = false
     }
 
     private nonisolated static func scan(root: URL, cache: [String: CachedEntry]) async -> ScanResult {
+        guard (try? FileManager.default.contentsOfDirectory(atPath: root.path)) != nil else {
+            return ScanResult(tracks: [], shares: [], cache: cache, listingFailed: true)
+        }
         let files = audioFiles(in: root)
         var newCache: [String: CachedEntry] = [:]
         var tracks: [Track] = []
