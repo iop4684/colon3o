@@ -133,6 +133,18 @@ final class AppRouter: ObservableObject {
     }
     /// Opens the Search tab with "artist title" searched. Placeholder artists would only narrow
     /// the search to nothing, so those albums search by title alone.
+    /// The Library tab's navigation, so other screens (the player) can open an album or artist there.
+    @Published var libraryPath = NavigationPath()
+
+    /// Closes the player and opens this album or artist in the Library tab.
+    func showInLibrary<Value: Hashable>(_ value: Value) {
+        showPlayer = false
+        tab = .library
+        var path = NavigationPath()
+        path.append(value)
+        libraryPath = path
+    }
+
     func searchSoulseek(for album: Album) {
         let artist = ["Various Artists", "Unknown Artist"].contains(album.artist) ? "" : album.artist + " "
         pendingSearch = artist + album.title
@@ -149,6 +161,10 @@ final class AppRouter: ObservableObject {
     }
 
     func lyricsChanged() { lyricsRevision += 1 }
+    /// Bumped when the lyrics screen finishes loading (it may have saved a .lrc), so the player's
+    /// menu looks at the song's lyrics file again.
+    @Published private(set) var lyricsLoads = 0
+    func lyricsLoaded() { lyricsLoads += 1 }
 
     func importPlaylist(from source: ImportSource) { playlistImport = .pick(source) }
     func showImportProgress() { playlistImport = .progress }

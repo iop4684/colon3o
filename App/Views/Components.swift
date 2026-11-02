@@ -112,7 +112,7 @@ struct TrackRow: View {
     var subtitle: String?
     var isSelected: Bool?
 
-    @EnvironmentObject private var player: Player
+    @EnvironmentObject private var nowPlaying: NowPlayingState
     @EnvironmentObject private var favorites: FavoritesStore
     @EnvironmentObject private var library: LibraryStore
 
@@ -133,11 +133,11 @@ struct TrackRow: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    if player.current?.id == track.id {
-                        Image(systemName: player.isPlaying ? "waveform" : "speaker.fill")
+                    if nowPlaying.currentID == track.id {
+                        Image(systemName: nowPlaying.isPlaying ? "waveform" : "speaker.fill")
                             .font(.caption)
                             .foregroundStyle(.tint)
-                            .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
+                            .symbolEffect(.variableColor.iterative, isActive: nowPlaying.isPlaying)
                     }
                     Text(track.title)
                         .lineLimit(1)
@@ -386,5 +386,49 @@ struct EmptyStateView: View {
 
     var body: some View {
         ContentUnavailableView(title, systemImage: systemImage, description: Text(message))
+    }
+}
+
+/// One choice in an ActionPopover.
+struct PopoverAction: Identifiable {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+    var id: String { title }
+}
+
+/// Tapping the label opens a small list of choices in a bubble just below it (or above, when
+/// there's no room), leaving the label itself in view, unlike a menu, which opens over it.
+struct ActionPopover<Label: View>: View {
+    let actions: [PopoverAction]
+    @ViewBuilder let label: () -> Label
+    @State private var shown = false
+
+    var body: some View {
+        Button { shown = true } label: { label() }
+            .buttonStyle(.plain)
+            .disabled(actions.isEmpty)
+            .popover(isPresented: $shown, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(actions.enumerated()), id: \.element.id) { index, item in
+                        if index > 0 { Divider() }
+                        Button {
+                            shown = false
+                            // Let the bubble close first; the choice may close the player or switch tabs.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { item.action() }
+                        } label: {
+                            SwiftUI.Label(item.title, systemImage: item.systemImage)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(minWidth: 230)
+                .fixedSize()
+                .presentationCompactAdaptation(.popover)
+            }
     }
 }

@@ -90,12 +90,25 @@ struct UploadItem: Identifiable {
 }
 
 @MainActor
+final class DownloadBadge: ObservableObject {
+    @Published var count = 0
+}
+
+@MainActor
 final class SoulseekModel: ObservableObject {
     @Published private(set) var connection: ClientState = .disconnected
     @Published private(set) var results: [FolderResult] = []
     @Published private(set) var responseCount = 0
     @Published private(set) var currentQuery = ""
-    @Published private(set) var downloads: [DownloadItem] = []
+    @Published private(set) var downloads: [DownloadItem] = [] {
+        didSet {
+            let count = activeDownloadCount
+            if downloadBadge.count != count { downloadBadge.count = count }
+        }
+    }
+    /// The Downloads tab's badge, apart from `downloads` (which changes with every progress
+    /// update), so the root view doesn't redraw the whole app while files download.
+    let downloadBadge = DownloadBadge()
     @Published private(set) var uploads: [UploadItem] = []
     @Published private(set) var trackCandidates: [TrackCandidate] = []
     @Published private(set) var isFindingTrack = false

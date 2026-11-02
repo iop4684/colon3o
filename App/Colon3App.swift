@@ -83,6 +83,8 @@ struct Colon3App: App {
                 .environmentObject(library)
                 .environmentObject(player)
                 .environmentObject(player.clock)
+                .environmentObject(player.nowPlaying)
+                .environmentObject(soulseek.downloadBadge)
                 .environmentObject(favorites)
                 .environmentObject(playlists)
                 .environmentObject(lastfm)

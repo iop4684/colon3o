@@ -112,6 +112,7 @@ struct LyricsView: View {
         romajiVersion += 1
         checking = []
         isLoading = false
+        router.lyricsLoaded()
     }
 
     nonisolated private static func romanize(_ lyrics: Lyrics?) -> [Int: [Romaji.Piece]] {

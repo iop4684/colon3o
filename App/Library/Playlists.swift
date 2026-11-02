@@ -52,6 +52,7 @@ final class PlaylistStore: ObservableObject {
         playlists.removeAll { $0.id == playlist.id }
         save()
         try? FileManager.default.removeItem(at: ArtworkStore.overrideURL(for: .playlist(playlist.id)))
+        ArtworkStore.forgetOverrideState(.playlist(playlist.id))
     }
 
     /// Returns how many were added; songs already in the playlist are skipped.

@@ -75,19 +75,16 @@ struct AlbumDetailView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 14)
 
-                Menu {
-                    Button {
+                ActionPopover(actions: [
+                    PopoverAction(title: "Search on Soulseek", systemImage: "magnifyingglass") {
                         router.searchSoulseek(for: album)
-                    } label: {
-                        Label("Search on Soulseek", systemImage: "magnifyingglass")
-                    }
-                } label: {
+                    },
+                ]) {
                     Text(album.title)
                         .font(.title2.weight(.bold))
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.primary)
                 }
-                .tint(.primary)
                 if let artist = library.artist(named: album.artist) {
                     NavigationLink(value: artist) {
                         Text(album.artist).font(.title3).foregroundStyle(.tint)

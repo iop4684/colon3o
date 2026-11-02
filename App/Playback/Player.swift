@@ -21,11 +21,29 @@ final class PlaybackClock: ObservableObject {
     @Published var position: Double = 0
 }
 
+/// Just which song is playing and whether it's playing, for views that only mark the current song
+/// (every song row): they redraw when that changes, not on everything else the player publishes.
+@MainActor
+final class NowPlayingState: ObservableObject {
+    @Published private(set) var currentID: String?
+    @Published private(set) var isPlaying = false
+
+    func update(currentID: String?, isPlaying: Bool) {
+        if self.currentID != currentID { self.currentID = currentID }
+        if self.isPlaying != isPlaying { self.isPlaying = isPlaying }
+    }
+}
+
 @MainActor
 final class Player: ObservableObject {
-    @Published private(set) var queue: [Track] = []
-    @Published private(set) var index = 0
-    @Published private(set) var isPlaying = false
+    @Published private(set) var queue: [Track] = [] { didSet { syncNowPlaying() } }
+    @Published private(set) var index = 0 { didSet { syncNowPlaying() } }
+    @Published private(set) var isPlaying = false { didSet { syncNowPlaying() } }
+    let nowPlaying = NowPlayingState()
+
+    private func syncNowPlaying() {
+        nowPlaying.update(currentID: queue.indices.contains(index) ? queue[index].id : nil, isPlaying: isPlaying)
+    }
     let clock: PlaybackClock
     var position: Double { clock.position }
     @Published private(set) var duration: Double = 0

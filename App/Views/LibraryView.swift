@@ -33,7 +33,7 @@ struct LibraryView: View {
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $router.libraryPath) {
             content
                 .navigationTitle("Library")
                 .searchable(text: $query, prompt: "Search your library")

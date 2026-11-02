@@ -18,6 +18,9 @@ struct NowPlayingView: View {
     @State private var showEqualizer = false
     /// The song whose lyrics timing is being adjusted (the small sheet over the lyrics).
     @State private var timingTrack: Track?
+    /// Whether the song has a .lrc next to it, and whose; looked up when the song or its lyrics
+    /// change rather than on every redraw.
+    @State private var lyricsFile: PlayerMoreMenu.LyricsFile = .none
     @AppStorage(PerformanceTest.meterKey) private var showMeter = false
     @AppStorage(PerformanceTest.plainBackgroundKey) private var plainBackground = false
     /// How far the player has been pulled down to close it.
@@ -85,6 +88,14 @@ struct NowPlayingView: View {
                 .presentationBackgroundInteraction(.enabled(upThrough: .height(230)))
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: mode)
+        .task(id: "\(player.current?.id ?? "")#\(router.lyricsRevision)#\(router.lyricsLoads)") {
+            guard let track = player.current else { return }
+            let file = LibraryStore.lyricsURL(for: track)
+            lyricsFile = await Task.detached(priority: .utility) {
+                !FileManager.default.fileExists(atPath: file.path) ? PlayerMoreMenu.LyricsFile.none
+                    : (LyricsService.fetchedSource(of: file) == nil ? .yours : .fetched)
+            }.value
+        }
     }
 
     private var dismissDrag: some Gesture {
@@ -138,14 +149,17 @@ struct NowPlayingView: View {
                 .shadow(color: .black.opacity(0.25), radius: 6, y: 3)
                 .onTapGesture { mode = .artwork }
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
-                    .font(compact ? .headline : .title3.weight(.bold))
-                    .lineLimit(1)
-                Text(track.artist)
-                    .font(compact ? .subheadline : .title3)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(1)
+            ActionPopover(actions: libraryLinks(for: track)) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title)
+                        .font(compact ? .headline : .title3.weight(.bold))
+                        .lineLimit(1)
+                    Text(track.artist)
+                        .font(compact ? .subheadline : .title3)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
             }
             Spacer(minLength: 8)
             Button {
@@ -162,14 +176,25 @@ struct NowPlayingView: View {
         .padding(.bottom, compact ? 12 : 0)
     }
 
+    /// Tapping the song's name: its album and artist in the Library.
+    private func libraryLinks(for track: Track) -> [PopoverAction] {
+        var links: [PopoverAction] = []
+        let album = library.album(containing: track)
+        if let album {
+            links.append(PopoverAction(title: "Go to Album", systemImage: "square.stack") { router.showInLibrary(album) })
+        }
+        if let artist = library.artist(named: track.artist) ?? album.flatMap({ library.artist(named: $0.artist) }) {
+            links.append(PopoverAction(title: "Go to Artist", systemImage: "music.mic") { router.showInLibrary(artist) })
+        }
+        return links
+    }
+
     /// The ••• menu, built from plain values so it only redraws when one of them changes. (It used
     /// to be rebuilt on every update of the player screen, which made an open menu flicker,
     /// worst over the lyrics.)
     private func moreMenu(_ track: Track) -> some View {
         let target = library.album(containing: track).map(ArtworkTarget.album) ?? .track(track)
         let file = LibraryStore.lyricsURL(for: track)
-        let lyricsFile: PlayerMoreMenu.LyricsFile = !FileManager.default.fileExists(atPath: file.path) ? .none
-            : (LyricsService.fetchedSource(of: file) == nil ? .yours : .fetched)
         return PlayerMoreMenu(
             trackID: track.id,
             artworkID: target.id,

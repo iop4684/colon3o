@@ -1,8 +1,11 @@
 import SwiftUI
 
+/// The tabs. Watches only small, rarely changing state (the download count, whether something is
+/// playing): redrawing this view re-evaluates the whole app.
 struct ContentView: View {
-    @EnvironmentObject private var soulseek: SoulseekModel
-    @EnvironmentObject private var player: Player
+    @EnvironmentObject private var downloadBadge: DownloadBadge
+    @EnvironmentObject private var nowPlaying: NowPlayingState
+    @Environment(\.playerActions) private var playerActions
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var updates: UpdateChecker
@@ -13,7 +16,7 @@ struct ContentView: View {
             Tab("Downloads", systemImage: "arrow.down.circle", value: AppTab.downloads) {
                 DownloadsView().modifier(FallbackMiniPlayer(open: openPlayer))
             }
-            .badge(soulseek.activeDownloadCount)
+            .badge(downloadBadge.count)
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 SearchView().modifier(FallbackMiniPlayer(open: openPlayer))
             }
@@ -25,14 +28,14 @@ struct ContentView: View {
             }
             .badge(updates.isUpdateAvailable ? 1 : 0)
         }
-        .modifier(TabAccessoryMiniPlayer(isVisible: player.current != nil, open: openPlayer))
+        .modifier(TabAccessoryMiniPlayer(isVisible: nowPlaying.currentID != nil, open: openPlayer))
         .modifier(RouterPresenters(active: !router.showPlayer))
         .fullScreenCover(isPresented: $router.showPlayer) {
             NowPlayingView()
                 .modifier(RouterPresenters(active: true))
                 .tint(Color(hex: accentHex))
         }
-        .onChange(of: library.artworkRevision) { _, _ in player.reloadArtwork() }
+        .onChange(of: library.artworkRevision) { _, _ in playerActions.player?.reloadArtwork() }
         .tint(Color(hex: accentHex))
     }
 

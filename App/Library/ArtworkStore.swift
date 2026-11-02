@@ -104,8 +104,25 @@ actor ArtworkStore {
         overridesDirectory.appendingPathComponent(MD5.hex(source.key) + ".img")
     }
 
+    /// Checked while drawing lists (every playlist row), so the answer is kept in memory instead of
+    /// asking the file system each time.
     nonisolated static func hasOverride(for source: ArtworkSource) -> Bool {
-        FileManager.default.fileExists(atPath: overrideURL(for: source).path)
+        let key = source.key
+        overrideLock.lock()
+        defer { overrideLock.unlock() }
+        if let known = knownOverrides[key] { return known }
+        let exists = FileManager.default.fileExists(atPath: overrideURL(for: source).path)
+        knownOverrides[key] = exists
+        return exists
+    }
+
+    private nonisolated static let overrideLock = NSLock()
+    nonisolated(unsafe) private static var knownOverrides: [String: Bool] = [:]
+
+    nonisolated static func forgetOverrideState(_ source: ArtworkSource) {
+        overrideLock.lock()
+        knownOverrides[source.key] = nil
+        overrideLock.unlock()
     }
 
     /// Saves picked image data as this album's or song's cover. Rejects anything ImageIO can't read.
@@ -113,12 +130,14 @@ actor ArtworkStore {
         guard let image = CGImageSourceCreateWithData(data as CFData, nil),
               CGImageSourceGetCount(image) > 0 else { return false }
         guard (try? data.write(to: Self.overrideURL(for: source), options: .atomic)) != nil else { return false }
+        Self.forgetOverrideState(source)
         invalidate(source)
         return true
     }
 
     func removeOverride(for source: ArtworkSource) {
         try? FileManager.default.removeItem(at: Self.overrideURL(for: source))
+        Self.forgetOverrideState(source)
         invalidate(source)
     }
 
