@@ -9,6 +9,7 @@ struct AlbumDetailView: View {
     @EnvironmentObject private var favorites: FavoritesStore
     @EnvironmentObject private var completeness: AlbumCompletenessStore
     @EnvironmentObject private var soulseek: SoulseekModel
+    @EnvironmentObject private var router: AppRouter
     @Environment(\.dismiss) private var dismiss
     @AppStorage(AppSettings.showMissingKey) private var showMissingSetting = true
     @State private var pendingDelete: [Track]?
@@ -75,9 +76,19 @@ struct AlbumDetailView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 14)
 
-                Text(album.title)
-                    .font(.title2.weight(.bold))
-                    .multilineTextAlignment(.center)
+                Menu {
+                    Button {
+                        router.searchSoulseek(for: album)
+                    } label: {
+                        Label("Search on Soulseek", systemImage: "magnifyingglass")
+                    }
+                } label: {
+                    Text(album.title)
+                        .font(.title2.weight(.bold))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.primary)
+                }
+                .tint(.primary)
                 if let artist = library.artist(named: album.artist) {
                     NavigationLink(value: artist) {
                         Text(album.artist).font(.title3).foregroundStyle(.tint)

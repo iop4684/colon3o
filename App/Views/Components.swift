@@ -252,10 +252,7 @@ struct TrackMenuItems: View {
                 Label("Merge with Album…", systemImage: "arrow.triangle.merge")
             }
             Button {
-                // Placeholder artists would only narrow the search to nothing.
-                let artist = ["Various Artists", "Unknown Artist"].contains(album.artist) ? "" : album.artist + " "
-                router.pendingSearch = artist + album.title
-                router.tab = .search
+                router.searchSoulseek(for: album)
             } label: {
                 Label("Search on Soulseek", systemImage: "magnifyingglass")
             }

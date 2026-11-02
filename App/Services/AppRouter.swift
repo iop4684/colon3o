@@ -128,6 +128,13 @@ final class AppRouter: ObservableObject {
         guard !tracks.isEmpty else { return }
         playlistRequest = PlaylistRequest(tracks: tracks)
     }
+    /// Opens the Search tab with "artist title" searched. Placeholder artists would only narrow
+    /// the search to nothing, so those albums search by title alone.
+    func searchSoulseek(for album: Album) {
+        let artist = ["Various Artists", "Unknown Artist"].contains(album.artist) ? "" : album.artist + " "
+        pendingSearch = artist + album.title
+        tab = .search
+    }
     func mergeAlbum(_ album: Album) { albumRequest = AlbumRequest(action: .merge(album)) }
     func mergeAlbums(_ albums: [Album], songs: [Track]) {
         guard !albums.isEmpty else { return }
