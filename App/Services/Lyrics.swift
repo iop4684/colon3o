@@ -37,6 +37,38 @@ enum LyricsSource: String, CaseIterable {
     case petit = "PetitLyrics"
 }
 
+/// Per-song lyrics choices from the player's ••• menu: which online source to use, and how far to
+/// shift the timing when the lyrics run ahead of or behind the song.
+@MainActor
+final class LyricsPreferences: ObservableObject {
+    static let shared = LyricsPreferences()
+
+    /// Seconds the lyrics are moved earlier (positive) or later (negative), by song id.
+    @Published private(set) var offsets: [String: Double]
+    @Published private(set) var sources: [String: String]
+
+    private init() {
+        offsets = UserDefaults.standard.dictionary(forKey: "lyrics.offsets") as? [String: Double] ?? [:]
+        sources = UserDefaults.standard.dictionary(forKey: "lyrics.sources") as? [String: String] ?? [:]
+    }
+
+    func offset(for id: String) -> Double { offsets[id] ?? 0 }
+
+    func setOffset(_ value: Double, for id: String) {
+        let rounded = (value * 10).rounded() / 10
+        offsets[id] = abs(rounded) < 0.05 ? nil : min(max(rounded, -30), 30)
+        UserDefaults.standard.set(offsets, forKey: "lyrics.offsets")
+    }
+
+    /// The source picked for this song; nil means automatic (the best of all of them).
+    func source(for id: String) -> LyricsSource? { sources[id].flatMap(LyricsSource.init(rawValue:)) }
+
+    func setSource(_ source: LyricsSource?, for id: String) {
+        sources[id] = source?.rawValue
+        UserDefaults.standard.set(sources, forKey: "lyrics.sources")
+    }
+}
+
 /// Lyrics from a .lrc file next to the song if there is one, otherwise the best of the online
 /// sources: LRCLIB (lrclib.net: free, no API key, mostly line-synced) and PetitLyrics (often
 /// word-synced). Whatever is used is saved next to the song as a .lrc (marked as fetched), so it
@@ -95,10 +127,14 @@ actor LyricsService {
     /// All sources are asked at once and the best answer wins: word-synced (PetitLyrics), then
     /// line-synced (LRCLIB, which also checks the song's length), then plain text from LRCLIB,
     /// then from PetitLyrics. It's saved, so this only happens once per song.
+    ///
+    /// `only` asks just that source (picked by hand for this song); its misses aren't remembered,
+    /// so going back to automatic searches everywhere again.
     func lyrics(title: String, artist: String, album: String?, duration: Double, cacheKey: String,
-                saveTo lrcFile: URL? = nil, onPending: @escaping @MainActor ([LyricsSource]) -> Void = { _ in }) async -> Lyrics? {
+                saveTo lrcFile: URL? = nil, only: LyricsSource? = nil,
+                onPending: @escaping @MainActor ([LyricsSource]) -> Void = { _ in }) async -> Lyrics? {
         let file = directory.appendingPathComponent(MD5.hex(cacheKey) + ".json")
-        if let data = try? Data(contentsOf: file), let stored = try? JSONDecoder().decode(Stored.self, from: data) {
+        if only == nil, let data = try? Data(contentsOf: file), let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             // Misses are retried after a few days in case someone has added the song since.
             if stored.entry != nil || Date().timeIntervalSince(stored.fetched) < 3 * 86_400 {
                 return Self.lyrics(from: stored.entry)
@@ -106,11 +142,12 @@ actor LyricsService {
         }
         guard AppSettings.lyricsLookupEnabled else { return .notFound }
 
-        var pending = LyricsSource.allCases
+        let asked = only.map { [$0] } ?? LyricsSource.allCases
+        var pending = asked
         await onPending(pending)
         var outcomes: [LyricsSource: Outcome] = [:]
         await withTaskGroup(of: (LyricsSource, Outcome).self) { group in
-            for source in LyricsSource.allCases {
+            for source in asked {
                 group.addTask { (source, await self.ask(source, title: title, artist: artist, album: album, duration: duration)) }
             }
             for await (source, outcome) in group {
@@ -136,13 +173,13 @@ actor LyricsService {
             guard case let .found(lyrics, lrc, entry)? = outcomes[source], accepts(lyrics) else { continue }
             if let lrc {
                 save(lrc, from: source, to: lrcFile)
-            } else if let entry {
+            } else if let entry, only == nil {
                 remember(entry, in: file)  // Instrumental: nothing to save as a file.
             }
             return lyrics
         }
         if outcomes.values.contains(where: { if case .failed = $0 { return true }; return false }) { return nil }
-        remember(nil, in: file)
+        if only == nil { remember(nil, in: file) }
         return .notFound
     }
 

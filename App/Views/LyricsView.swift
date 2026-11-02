@@ -9,6 +9,7 @@ struct LyricsView: View {
     let onSeek: (Double) -> Void
 
     @EnvironmentObject private var router: AppRouter
+    @ObservedObject private var preferences = LyricsPreferences.shared
     @State private var lyrics: Lyrics?
     @State private var isLoading = true
     /// The online sources still being asked, for the loading status.
@@ -60,7 +61,8 @@ struct LyricsView: View {
                     VStack(spacing: 12) {
                         message("No lyrics found", systemImage: "quote.bubble")
                             .overlay(alignment: .bottom) {
-                                Text("Checked " + LyricsSource.allCases.map(\.rawValue).joined(separator: " and "))
+                                Text("Checked " + (preferences.source(for: track.id).map { [$0] } ?? LyricsSource.allCases)
+                                    .map(\.rawValue).joined(separator: " and "))
                                     .font(.caption)
                                     .foregroundStyle(.white.opacity(0.45))
                                     .offset(y: 24)
@@ -82,7 +84,8 @@ struct LyricsView: View {
         }
         .overlay(alignment: .bottom) {
             if !isLoading, let fetchedFrom {
-                Text("Lyrics from \(fetchedFrom)")
+                let shift = preferences.offset(for: track.id)
+                Text("Lyrics from \(fetchedFrom)" + (shift == 0 ? "" : String(format: " · %+.1f s", shift)))
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.4))
                     .padding(.bottom, 6)
@@ -100,6 +103,7 @@ struct LyricsView: View {
         } else {
             lyrics = await LyricsService.shared.lyrics(title: track.title, artist: track.artist, album: albumTitle,
                                                        duration: track.duration, cacheKey: track.id, saveTo: file,
+                                                       only: preferences.source(for: track.id),
                                                        onPending: { checking = $0 })
         }
         fetchedFrom = await Task.detached { LyricsService.fetchedSource(of: file) }.value
@@ -125,7 +129,10 @@ struct LyricsView: View {
 
     /// PetitLyrics' timings run late: measured against Apple Music on the same song, its words
     /// land about three quarters of a second after the singing. Other sources are used as they are.
-    private var timingLead: Double { fetchedFrom == LyricsSource.petit.rawValue ? 0.75 : 0 }
+    /// Plus the song's own shift from Adjust Timing.
+    private var timingLead: Double {
+        (fetchedFrom == LyricsSource.petit.rawValue ? 0.75 : 0) + preferences.offset(for: track.id)
+    }
 
     private func activeLine(in lines: [LyricLine]) -> Int {
         // Lead slightly so the highlight lands as the line starts.
@@ -155,7 +162,10 @@ struct LyricsView: View {
                             browsing: browsing,
                             position: noSweep ? 0 : position + timingLead,
                             sweeps: !noSweep,
-                            onSeek: onSeek)
+                            onSeek: { [id = track.id] time in
+                                // A tapped line plays from where it's shown, timing shift included.
+                                onSeek(max(time - LyricsPreferences.shared.offset(for: id), 0))
+                            })
                     .equatable()
                     .padding(.horizontal, 28)
                     .frame(maxWidth: .infinity, alignment: .leading)

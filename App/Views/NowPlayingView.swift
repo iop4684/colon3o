@@ -16,10 +16,9 @@ struct NowPlayingView: View {
     @EnvironmentObject private var router: AppRouter
     @State private var mode: Mode = .artwork
     @State private var showEqualizer = false
-    @AppStorage(LyricsView.romajiKey) private var showRomaji = true
+    /// The song whose lyrics timing is being adjusted (the small sheet over the lyrics).
+    @State private var timingTrack: Track?
     @AppStorage(PerformanceTest.meterKey) private var showMeter = false
-    @AppStorage(PerformanceTest.noSweepKey) private var noSweep = false
-    @AppStorage(PerformanceTest.noFadeKey) private var noFade = false
     @AppStorage(PerformanceTest.plainBackgroundKey) private var plainBackground = false
     /// How far the player has been pulled down to close it.
     @State private var dragOffset: CGFloat = 0
@@ -78,6 +77,12 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showEqualizer) {
             NavigationStack { EqualizerView(equalizer: player.equalizer) }
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $timingTrack) { track in
+            // Small and see-through to the lyrics, so the change can be judged as the song plays.
+            LyricsTimingSheet(track: track)
+                .presentationDetents([.height(230)])
+                .presentationBackgroundInteraction(.enabled(upThrough: .height(230)))
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: mode)
     }
@@ -157,66 +162,55 @@ struct NowPlayingView: View {
         .padding(.bottom, compact ? 12 : 0)
     }
 
+    /// The ••• menu, built from plain values so it only redraws when one of them changes. (It used
+    /// to be rebuilt on every update of the player screen, which made an open menu flicker,
+    /// worst over the lyrics.)
     private func moreMenu(_ track: Track) -> some View {
-        Menu {
-            Button {
-                showEqualizer = true
-            } label: {
-                Label("Equalizer", systemImage: "slider.vertical.3")
-            }
-            Button {
-                router.addToPlaylist([track])
-            } label: {
-                Label("Add to Playlist…", systemImage: "text.badge.plus")
-            }
-            Divider()
-            Button {
-                mode = .lyrics
-                Task {
-                    await LyricsService.shared.forget(cacheKey: track.id, fetchedFile: LibraryStore.lyricsURL(for: track))
-                    router.lyricsChanged()
-                }
-            } label: {
-                Label("Search Lyrics Again", systemImage: "quote.bubble")
-            }
-            Button {
-                mode = .lyrics
-                router.importLyrics(for: track)
-            } label: {
-                Label("Import Lyrics (.lrc)…", systemImage: "doc.text")
-            }
-            Button {
-                showRomaji.toggle()
-            } label: {
-                Label(showRomaji ? "Hide Romaji" : "Show Romaji", systemImage: "character.textbox")
-            }
-            Menu {
-                Toggle("Show Frame Rate", isOn: $showMeter)
-                Toggle("Turn Off Word Sweep", isOn: $noSweep)
-                Toggle("Turn Off Edge Fade", isOn: $noFade)
-                Toggle("Plain Background", isOn: $plainBackground)
-            } label: {
-                Label("Performance Test", systemImage: "gauge.with.dots.needle.33percent")
-            }
-            if FileManager.default.fileExists(atPath: LibraryStore.lyricsURL(for: track).path) {
-                Button(role: .destructive) {
+        let target = library.album(containing: track).map(ArtworkTarget.album) ?? .track(track)
+        let file = LibraryStore.lyricsURL(for: track)
+        let lyricsFile: PlayerMoreMenu.LyricsFile = !FileManager.default.fileExists(atPath: file.path) ? .none
+            : (LyricsService.fetchedSource(of: file) == nil ? .yours : .fetched)
+        return PlayerMoreMenu(
+            trackID: track.id,
+            artworkID: target.id,
+            hasCustomArtwork: library.hasCustomArtwork(target),
+            lyricsFile: lyricsFile,
+            source: LyricsPreferences.shared.source(for: track.id),
+            actions: PlayerMoreMenu.Actions(
+                equalizer: { showEqualizer = true },
+                addToPlaylist: { router.addToPlaylist([track]) },
+                searchAgain: {
+                    mode = .lyrics
+                    Task {
+                        await LyricsService.shared.forget(cacheKey: track.id, fetchedFile: file)
+                        router.lyricsChanged()
+                    }
+                },
+                pickSource: { source in
+                    mode = .lyrics
+                    LyricsPreferences.shared.setSource(source, for: track.id)
+                    Task {
+                        await LyricsService.shared.forget(cacheKey: track.id, fetchedFile: file)
+                        router.lyricsChanged()
+                    }
+                },
+                adjustTiming: {
+                    mode = .lyrics
+                    timingTrack = track
+                },
+                importLyrics: {
+                    mode = .lyrics
+                    router.importLyrics(for: track)
+                },
+                removeLyricsFile: {
                     library.removeLyricsFile(for: track)
                     router.lyricsChanged()
-                } label: {
-                    Label("Remove Lyrics File", systemImage: "doc.badge.minus")
-                }
-            }
-            ArtworkMenu(target: library.album(containing: track).map(ArtworkTarget.album) ?? .track(track))
-            Divider()
-            ShareLink(item: track.url) {
-                Label("Share File", systemImage: "square.and.arrow.up")
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.title3.weight(.semibold))
-                .frame(width: 34, height: 34)
-                .background(.white.opacity(0.12), in: Circle())
-        }
+                },
+                artworkFromPhotos: { router.pickArtworkPhoto(for: target) },
+                artworkFromFiles: { router.importArtworkFile(for: target) },
+                removeArtwork: { Task { await library.removeCustomArtwork(for: target) } },
+                shareURL: track.url))
+            .equatable()
     }
 
     private var transport: some View {
@@ -758,5 +752,175 @@ struct SpeedControl: View {
 
     private func position(_ rate: Float, _ width: CGFloat) -> CGFloat {
         CGFloat((rate - lower) / (upper - lower)) * width
+    }
+}
+
+/// The player's ••• menu. Equatable on the values it shows, so an open menu isn't rebuilt (and
+/// doesn't flicker) every time the player screen updates during playback.
+struct PlayerMoreMenu: View, Equatable {
+    enum LyricsFile { case none, fetched, yours }
+
+    struct Actions {
+        let equalizer: () -> Void
+        let addToPlaylist: () -> Void
+        let searchAgain: () -> Void
+        let pickSource: (LyricsSource?) -> Void
+        let adjustTiming: () -> Void
+        let importLyrics: () -> Void
+        let removeLyricsFile: () -> Void
+        let artworkFromPhotos: () -> Void
+        let artworkFromFiles: () -> Void
+        let removeArtwork: () -> Void
+        let shareURL: URL
+    }
+
+    let trackID: String
+    let artworkID: String
+    let hasCustomArtwork: Bool
+    let lyricsFile: LyricsFile
+    let source: LyricsSource?
+    let actions: Actions
+
+    @AppStorage(LyricsView.romajiKey) private var showRomaji = true
+    @AppStorage(PerformanceTest.meterKey) private var showMeter = false
+    @AppStorage(PerformanceTest.noSweepKey) private var noSweep = false
+    @AppStorage(PerformanceTest.noFadeKey) private var noFade = false
+    @AppStorage(PerformanceTest.plainBackgroundKey) private var plainBackground = false
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.trackID == b.trackID && a.artworkID == b.artworkID && a.hasCustomArtwork == b.hasCustomArtwork
+            && a.lyricsFile == b.lyricsFile && a.source == b.source
+    }
+
+    var body: some View {
+        Menu {
+            Button(action: actions.equalizer) {
+                Label("Equalizer", systemImage: "slider.vertical.3")
+            }
+            Button(action: actions.addToPlaylist) {
+                Label("Add to Playlist…", systemImage: "text.badge.plus")
+            }
+            Divider()
+            Button(action: actions.searchAgain) {
+                Label("Search Lyrics Again", systemImage: "quote.bubble")
+            }
+            if lyricsFile != .yours {
+                Picker(selection: Binding(get: { source }, set: { actions.pickSource($0) })) {
+                    Text("Automatic").tag(LyricsSource?.none)
+                    ForEach(LyricsSource.allCases, id: \.self) { source in
+                        Text(source.rawValue).tag(Optional(source))
+                    }
+                } label: {
+                    Label("Lyrics Source", systemImage: "network")
+                    Text(source?.rawValue ?? "Automatic")
+                }
+                .pickerStyle(.menu)
+            }
+            Button(action: actions.adjustTiming) {
+                Label("Adjust Lyrics Timing…", systemImage: "timer")
+            }
+            Button(action: actions.importLyrics) {
+                Label("Import Lyrics (.lrc)…", systemImage: "doc.text")
+            }
+            Button {
+                showRomaji.toggle()
+            } label: {
+                Label(showRomaji ? "Hide Romaji" : "Show Romaji", systemImage: "character.textbox")
+            }
+            Menu {
+                Toggle("Show Frame Rate", isOn: $showMeter)
+                Toggle("Turn Off Word Sweep", isOn: $noSweep)
+                Toggle("Turn Off Edge Fade", isOn: $noFade)
+                Toggle("Plain Background", isOn: $plainBackground)
+            } label: {
+                Label("Performance Test", systemImage: "gauge.with.dots.needle.33percent")
+            }
+            if lyricsFile != .none {
+                Button(role: .destructive, action: actions.removeLyricsFile) {
+                    Label("Remove Lyrics File", systemImage: "doc.badge.minus")
+                }
+            }
+            Menu {
+                Button(action: actions.artworkFromPhotos) {
+                    Label("Choose from Photos…", systemImage: "photo.on.rectangle")
+                }
+                Button(action: actions.artworkFromFiles) {
+                    Label("Choose from Files…", systemImage: "folder")
+                }
+                if hasCustomArtwork {
+                    Button(role: .destructive, action: actions.removeArtwork) {
+                        Label("Use Original Artwork", systemImage: "arrow.uturn.backward")
+                    }
+                }
+            } label: {
+                Label("Change Artwork", systemImage: "photo")
+            }
+            Divider()
+            ShareLink(item: actions.shareURL) {
+                Label("Share File", systemImage: "square.and.arrow.up")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.title3.weight(.semibold))
+                .frame(width: 34, height: 34)
+                .background(.white.opacity(0.12), in: Circle())
+        }
+    }
+}
+
+/// Moves a song's lyrics earlier or later, live, while it plays behind the sheet.
+struct LyricsTimingSheet: View {
+    let track: Track
+    @ObservedObject private var preferences = LyricsPreferences.shared
+    @Environment(\.dismiss) private var dismiss
+
+    private var offset: Double { preferences.offset(for: track.id) }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Text("Lyrics Timing").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }.fontWeight(.semibold)
+            }
+            Text(summary)
+                .font(.title3.monospacedDigit().weight(.semibold))
+                .contentTransition(.numericText(value: offset))
+                .animation(.snappy, value: offset)
+            HStack(spacing: 10) {
+                step(-0.5)
+                step(-0.1)
+                Button {
+                    preferences.setOffset(0, for: track.id)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise").frame(maxWidth: .infinity)
+                }
+                .disabled(offset == 0)
+                step(0.1)
+                step(0.5)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            Text("Lyrics behind the singing? Tap +. Ahead of it? Tap −. Saved for this song.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+        .sensoryFeedback(.selection, trigger: offset)
+    }
+
+    private var summary: String {
+        if offset == 0 { return "Original timing" }
+        return String(format: "%.1f s %@", abs(offset), offset > 0 ? "earlier" : "later")
+    }
+
+    private func step(_ amount: Double) -> some View {
+        Button {
+            preferences.setOffset(offset + amount, for: track.id)
+        } label: {
+            Text(String(format: "%+.1f", amount)).monospacedDigit().frame(maxWidth: .infinity)
+        }
     }
 }
