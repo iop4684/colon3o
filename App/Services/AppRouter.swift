@@ -65,6 +65,20 @@ struct PlaylistRequest: Identifiable {
     let tracks: [Track]
 }
 
+/// Merging albums or moving songs into one; both pick an album in a sheet.
+struct AlbumRequest: Identifiable {
+    enum Action {
+        /// Pick another album to fold into this one.
+        case merge(Album)
+        /// Albums (and loose songs) selected together: pick the one the rest go into.
+        case mergeSelected([Album], songs: [Track])
+        case addSongs([Track])
+    }
+
+    let id = UUID()
+    let action: Action
+}
+
 /// App-wide navigation and the pickers/sheets any screen can ask for (context menus can't
 /// present things themselves). Also handles colon3:// links from the Dynamic Island,
 /// Shortcuts and Back Tap.
@@ -92,6 +106,8 @@ final class AppRouter: ObservableObject {
     @Published var songInfo: Track?
     /// Edit Info, for a song or a whole album.
     @Published var tagEditing: TagEditTarget?
+    /// Merge with Album / Add to Album.
+    @Published var albumRequest: AlbumRequest?
 
     init() {
         // The Home tab is hidden in this fork; a saved Home selection opens Library instead.
@@ -111,6 +127,15 @@ final class AppRouter: ObservableObject {
     func addToPlaylist(_ tracks: [Track]) {
         guard !tracks.isEmpty else { return }
         playlistRequest = PlaylistRequest(tracks: tracks)
+    }
+    func mergeAlbum(_ album: Album) { albumRequest = AlbumRequest(action: .merge(album)) }
+    func mergeAlbums(_ albums: [Album], songs: [Track]) {
+        guard !albums.isEmpty else { return }
+        albumRequest = AlbumRequest(action: .mergeSelected(albums, songs: songs))
+    }
+    func addToAlbum(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        albumRequest = AlbumRequest(action: .addSongs(tracks))
     }
 
     func lyricsChanged() { lyricsRevision += 1 }

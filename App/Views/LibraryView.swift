@@ -393,6 +393,20 @@ struct LibraryView: View {
         }
     }
 
+    private var selectedAlbums: [Album] {
+        filteredItems.compactMap { item in
+            guard selection.contains(item.id), case let .album(album) = item else { return nil }
+            return album
+        }
+    }
+
+    private var selectedSingles: [Track] {
+        filteredItems.compactMap { item in
+            guard selection.contains(item.id), case let .single(track) = item else { return nil }
+            return track
+        }
+    }
+
     private var selectionBar: some View {
         let tracks = selectedTracks
         return HStack {
@@ -403,6 +417,18 @@ struct LibraryView: View {
             Button { toggleFavorites(); endSelection() } label: { Label("Favorite", systemImage: "star") }
             Spacer()
             Button { router.addToPlaylist(tracks); endSelection() } label: { Label("Add to Playlist", systemImage: "text.badge.plus") }
+            Spacer()
+            if scope == .albums {
+                let albums = selectedAlbums, singles = selectedSingles
+                Button { router.mergeAlbums(albums, songs: singles); endSelection() } label: {
+                    Label("Merge", systemImage: "arrow.triangle.merge")
+                }
+                .disabled(albums.isEmpty || albums.count + singles.count < 2)
+            } else {
+                Button { router.addToAlbum(tracks); endSelection() } label: {
+                    Label("Add to Album", systemImage: "rectangle.stack.badge.plus")
+                }
+            }
             Spacer()
             Button(role: .destructive) { pendingDelete = tracks } label: { Label("Delete", systemImage: "trash") }
         }

@@ -246,6 +246,17 @@ struct TrackMenuItems: View {
             } label: {
                 Label("Edit Album Info…", systemImage: "pencil")
             }
+            Button {
+                router.mergeAlbum(album)
+            } label: {
+                Label("Merge with Album…", systemImage: "arrow.triangle.merge")
+            }
+        } else {
+            Button {
+                router.addToAlbum(tracks)
+            } label: {
+                Label("Add to Album…", systemImage: "rectangle.stack.badge.plus")
+            }
         }
         if tracks.count == 1, let track = tracks.first {
             Button {

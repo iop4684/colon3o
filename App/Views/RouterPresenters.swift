@@ -30,6 +30,9 @@ struct RouterPresenters: ViewModifier {
             .sheet(item: active ? $router.tagEditing : .constant(nil)) { target in
                 TagEditorView(target: target)
             }
+            .sheet(item: active ? $router.albumRequest : .constant(nil)) { request in
+                AlbumRequestSheet(request: request)
+            }
             .fileImporter(isPresented: active ? $router.showImporter : .constant(false),
                           allowedContentTypes: router.importKind.types,
                           allowsMultipleSelection: router.importKind.allowsMultiple) { result in
