@@ -150,15 +150,20 @@ actor ArtworkStore {
         }
         switch source {
         case let .album(album):
-            if let local = folderImage(in: album.folder) { return local }
+            let local = folderImage(in: album.folder)
+            if let local, Self.pixelSize(local) >= Self.goodEnough { return local }
+            var inFile: URL?
             for track in album.tracks where track.hasEmbeddedArt {
-                if let embedded = await embedded(track, cacheKey: source.key) { return embedded }
+                if let found = await embedded(track, cacheKey: source.key) { inFile = found; break }
             }
+            if let best = Self.sharper(local, inFile) { return best }
             return await online(query: "\(album.artist) \(album.title)", entity: "album", cacheKey: source.key)
 
         case let .track(track):
-            if !isLibraryRoot(track.folder), let local = folderImage(in: track.folder) { return local }
-            if track.hasEmbeddedArt, let embedded = await embedded(track, cacheKey: source.key) { return embedded }
+            let local = isLibraryRoot(track.folder) ? nil : folderImage(in: track.folder)
+            if let local, Self.pixelSize(local) >= Self.goodEnough { return local }
+            let inFile = track.hasEmbeddedArt ? await embedded(track, cacheKey: source.key) : nil
+            if let best = Self.sharper(local, inFile) { return best }
             return await online(query: "\(track.artist) \(track.title)", entity: "song", cacheKey: source.key)
 
         case let .remote(query):
@@ -181,12 +186,48 @@ actor ArtworkStore {
         return found
     }
 
+    /// A cover this big (longest side, in pixels) is sharp everywhere it's shown.
+    nonisolated static let goodEnough = 600
+
+    /// The image's longest side in pixels, read from its header only (0 if unreadable).
+    nonisolated static func pixelSize(_ url: URL) -> Int {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return 0 }
+        let width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
+        return max(width, height)
+    }
+
+    /// The bigger of a folder's cover file and the art inside the song file. (A small folder.jpg,
+    /// often 200 pixels, used to win over full-size art in the file, so covers looked blurry
+    /// in some places and sharp in others.)
+    nonisolated static func sharper(_ a: URL?, _ b: URL?) -> URL? {
+        guard let a else { return b }
+        guard let b else { return a }
+        return pixelSize(b) > pixelSize(a) ? b : a
+    }
+
+    /// Backs, discs, inlays and booklet pages: never the cover when anything else is there.
+    nonisolated static func isNotFront(_ name: String) -> Bool {
+        let name = name.lowercased()
+        return ["back", "cd", "disc", "disk", "inlay", "inside", "tray", "booklet", "matrix", "obi", "spine"]
+            .contains { name.contains($0) } && !name.contains("front") && !name.contains("cover")
+    }
+
     nonisolated static func findFolderImage(in folder: URL) -> URL? {
         let keys: [URLResourceKey] = [.fileSizeKey]
         guard let contents = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
                                                                          options: [.skipsHiddenFiles]) else { return nil }
-        let images = contents.filter { LibraryStore.imageExtensions.contains($0.pathExtension.lowercased()) }
-        guard !images.isEmpty else { return nil }
+        let all = contents.filter { LibraryStore.imageExtensions.contains($0.pathExtension.lowercased()) }
+        guard !all.isEmpty else { return nil }
+        let fronts = all.filter { !isNotFront($0.deletingPathExtension().lastPathComponent) }
+        let images = fronts.isEmpty ? all : fronts
+        // Several likely covers (cover.jpg and a small folder.jpg): the sharpest one.
+        let named = images.filter { url in
+            let name = url.deletingPathExtension().lastPathComponent.lowercased()
+            return ["cover", "folder", "front", "album", "artwork", "art"].contains { name.contains($0) }
+        }
+        if named.count > 1 { return named.max { pixelSize($0) < pixelSize($1) } }
         let preferred = ["cover", "folder", "front", "album", "artwork", "art"]
         for name in preferred {
             if let match = images.first(where: { $0.deletingPathExtension().lastPathComponent.lowercased() == name }) {

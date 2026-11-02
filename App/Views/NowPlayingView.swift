@@ -817,79 +817,101 @@ struct PlayerMoreMenu: View, Equatable {
             && a.lyricsFile == b.lyricsFile && a.source == b.source
     }
 
+    @State private var shown = false
+
     var body: some View {
-        Menu {
-            Button(action: actions.equalizer) {
-                Label("Equalizer", systemImage: "slider.vertical.3")
-            }
-            Button(action: actions.addToPlaylist) {
-                Label("Add to Playlist…", systemImage: "text.badge.plus")
-            }
-            Divider()
-            Button(action: actions.searchAgain) {
-                Label("Search Lyrics Again", systemImage: "quote.bubble")
-            }
-            if lyricsFile != .yours {
-                Picker(selection: Binding(get: { source }, set: { actions.pickSource($0) })) {
-                    Text("Automatic").tag(LyricsSource?.none)
-                    ForEach(LyricsSource.allCases, id: \.self) { source in
-                        Text(source.rawValue).tag(Optional(source))
-                    }
-                } label: {
-                    Label("Lyrics Source", systemImage: "network")
-                    Text(source?.rawValue ?? "Automatic")
-                }
-                .pickerStyle(.menu)
-            }
-            Button(action: actions.adjustTiming) {
-                Label("Adjust Lyrics Timing…", systemImage: "timer")
-            }
-            Button(action: actions.importLyrics) {
-                Label("Import Lyrics (.lrc)…", systemImage: "doc.text")
-            }
-            Button {
-                showRomaji.toggle()
-            } label: {
-                Label(showRomaji ? "Hide Romaji" : "Show Romaji", systemImage: "character.textbox")
-            }
-            Menu {
-                Toggle("Show Frame Rate", isOn: $showMeter)
-                Toggle("Turn Off Word Sweep", isOn: $noSweep)
-                Toggle("Turn Off Edge Fade", isOn: $noFade)
-                Toggle("Plain Background", isOn: $plainBackground)
-            } label: {
-                Label("Performance Test", systemImage: "gauge.with.dots.needle.33percent")
-            }
-            if lyricsFile != .none {
-                Button(role: .destructive, action: actions.removeLyricsFile) {
-                    Label("Remove Lyrics File", systemImage: "doc.badge.minus")
-                }
-            }
-            Menu {
-                Button(action: actions.artworkFromPhotos) {
-                    Label("Choose from Photos…", systemImage: "photo.on.rectangle")
-                }
-                Button(action: actions.artworkFromFiles) {
-                    Label("Choose from Files…", systemImage: "folder")
-                }
-                if hasCustomArtwork {
-                    Button(role: .destructive, action: actions.removeArtwork) {
-                        Label("Use Original Artwork", systemImage: "arrow.uturn.backward")
-                    }
-                }
-            } label: {
-                Label("Change Artwork", systemImage: "photo")
-            }
-            Divider()
-            ShareLink(item: actions.shareURL) {
-                Label("Share File", systemImage: "square.and.arrow.up")
-            }
-        } label: {
+        Button { shown = true } label: {
             Image(systemName: "ellipsis")
                 .font(.title3.weight(.semibold))
                 .frame(width: 34, height: 34)
                 .background(.white.opacity(0.12), in: Circle())
         }
+        .buttonStyle(.plain)
+        // A popover of our own rather than a system menu: the system menu was rebuilt (flickering,
+        // and jumping back to the top while scrolled) whenever the player screen updated.
+        .popover(isPresented: $shown, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    row("Equalizer", "slider.vertical.3", then: actions.equalizer)
+                    row("Add to Playlist…", "text.badge.plus", then: actions.addToPlaylist)
+                    divider
+                    row("Search Lyrics Again", "quote.bubble", then: actions.searchAgain)
+                    if lyricsFile != .yours {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Lyrics Source", systemImage: "network")
+                            Picker("Lyrics Source", selection: Binding(get: { source }, set: { new in close { actions.pickSource(new) } })) {
+                                Text("Auto").tag(LyricsSource?.none)
+                                ForEach(LyricsSource.allCases, id: \.self) { Text($0 == .petit ? "Petit" : $0.rawValue).tag(Optional($0)) }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    }
+                    row("Adjust Lyrics Timing…", "timer", then: actions.adjustTiming)
+                    row("Import Lyrics (.lrc)…", "doc.text", then: actions.importLyrics)
+                    Toggle(isOn: $showRomaji) { Label("Romaji", systemImage: "character.textbox") }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                    if lyricsFile != .none {
+                        row("Remove Lyrics File", "doc.badge.minus", role: .destructive, then: actions.removeLyricsFile)
+                    }
+                    divider
+                    row("Artwork from Photos…", "photo.on.rectangle", then: actions.artworkFromPhotos)
+                    row("Artwork from Files…", "folder", then: actions.artworkFromFiles)
+                    if hasCustomArtwork {
+                        row("Use Original Artwork", "arrow.uturn.backward", role: .destructive, then: actions.removeArtwork)
+                    }
+                    divider
+                    ShareLink(item: actions.shareURL) {
+                        Label("Share File", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    divider
+                    DisclosureGroup {
+                        Toggle("Show Frame Rate", isOn: $showMeter)
+                        Toggle("Turn Off Word Sweep", isOn: $noSweep)
+                        Toggle("Turn Off Edge Fade", isOn: $noFade)
+                        Toggle("Plain Background", isOn: $plainBackground)
+                    } label: {
+                        Label("Performance Test", systemImage: "gauge.with.dots.needle.33percent")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .font(.body)
+            }
+            .frame(width: 300, height: 540)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var divider: some View {
+        Divider().padding(.vertical, 4)
+    }
+
+    /// Closes the popover first; what's chosen may open a sheet or a picker of its own.
+    private func close(then action: @escaping () -> Void) {
+        shown = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: action)
+    }
+
+    private func row(_ title: String, _ symbol: String, role: ButtonRole? = nil, then action: @escaping () -> Void) -> some View {
+        Button(role: role) {
+            close(then: action)
+        } label: {
+            Label(title, systemImage: symbol)
+                .foregroundStyle(role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

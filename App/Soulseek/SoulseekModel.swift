@@ -440,7 +440,15 @@ final class SoulseekModel: ObservableObject {
     }
 
     static func bestCover(_ images: [SharedFile]) -> SharedFile? {
-        let usable = images.filter { $0.size > 0 && $0.size < 15_000_000 }
+        let sized = images.filter { $0.size > 0 && $0.size < 15_000_000 }
+        let fronts = sized.filter { !ArtworkStore.isNotFront(($0.filename as NSString).deletingPathExtension) }
+        let usable = fronts.isEmpty ? sized : fronts
+        // Several likely covers (cover.jpg and a small folder.jpg): the biggest file is the sharpest.
+        let named = usable.filter { file in
+            let name = (file.filename as NSString).deletingPathExtension.lowercased()
+            return ["cover", "folder", "front", "album", "artwork"].contains { name.contains($0) }
+        }
+        if named.count > 1 { return named.max { $0.size < $1.size } }
         let preferred = ["cover", "folder", "front", "album", "artwork"]
         for name in preferred {
             if let match = usable.first(where: { ($0.filename as NSString).deletingPathExtension.lowercased() == name }) {
