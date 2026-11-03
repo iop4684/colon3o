@@ -841,9 +841,10 @@ struct PlayerMoreMenu: View, Equatable {
                 .background(.white.opacity(0.12), in: Circle())
         }
         .buttonStyle(.plain)
-        // A popover of our own rather than a system menu: the system menu was rebuilt (flickering,
-        // and jumping back to the top while scrolled) whenever the player screen updated.
-        .popover(isPresented: $shown, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+        // A sheet of our own rather than a system menu (which was rebuilt, flickering and jumping
+        // back to the top, whenever the player updated) or a popover (squeezed small under the
+        // button, so its list barely scrolled). Half height, pull up for all of it.
+        .sheet(isPresented: $shown) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     row("Equalizer", "slider.vertical.3", then: actions.equalizer)
@@ -903,8 +904,9 @@ struct PlayerMoreMenu: View, Equatable {
                 }
                 .font(.body)
             }
-            .frame(width: 300, height: 540)
-            .presentationCompactAdaptation(.popover)
+            .padding(.top, 20)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -915,7 +917,7 @@ struct PlayerMoreMenu: View, Equatable {
     /// Closes the popover first; what's chosen may open a sheet or a picker of its own.
     private func close(then action: @escaping () -> Void) {
         shown = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: action)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: action)
     }
 
     private func row(_ title: String, _ symbol: String, role: ButtonRole? = nil, then action: @escaping () -> Void) -> some View {
