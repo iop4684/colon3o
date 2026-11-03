@@ -32,6 +32,7 @@ struct RouterPresenters: ViewModifier {
             }
             .sheet(item: active ? $router.albumRequest : .constant(nil)) { request in
                 AlbumRequestSheet(request: request)
+            }
             .sheet(item: active ? $router.lyricsSearch : .constant(nil)) { request in
                 LyricsSearchSheet(track: request.track)
             }
