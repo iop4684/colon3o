@@ -45,8 +45,18 @@ enum Romaji {
         guard containsJapanese(text) else { return nil }
         let string = text as CFString
         let range = CFRange(location: 0, length: CFStringGetLength(string))
-        guard let tokenizer = CFStringTokenizerCreate(nil, string, range, kCFStringTokenizerUnitWord,
-                                                      Locale(identifier: "ja") as CFLocale) else { return nil }
+        // One tokenizer for every line, reset to each new one: a new Japanese tokenizer per line
+        // (hundreds per song) loads the system's Japanese dictionary each time, and the files it
+        // opens look to be what piled up until the app could open nothing at all.
+        tokenizerLock.lock()
+        defer { tokenizerLock.unlock() }
+        if let shared = sharedTokenizer {
+            CFStringTokenizerSetString(shared, string, range)
+        } else {
+            sharedTokenizer = CFStringTokenizerCreate(nil, string, range, kCFStringTokenizerUnitWord,
+                                                      Locale(identifier: "ja") as CFLocale)
+        }
+        guard let tokenizer = sharedTokenizer else { return nil }
 
         // Each word's reading in hiragana, and whether it stands on its own in romaji.
         var words: [(kana: String, attaches: Bool, range: CFRange)] = []
@@ -93,6 +103,9 @@ enum Romaji {
         }
         return result.isEmpty ? nil : result
     }
+
+    private static let tokenizerLock = NSLock()
+    nonisolated(unsafe) private static var sharedTokenizer: CFStringTokenizer?
 
     /// The word in hiragana: kana as written (katakana turned into hiragana), and words with kanji
     /// from the tokenizer's reading.

@@ -12,6 +12,7 @@ struct DiagnosticsView: View {
     @State private var crashes: [Diagnostics.CrashReport] = []
     @State private var share: ExportFile?
     @State private var confirmClear = false
+    @AppStorage(Diagnostics.detailedKey) private var detailed = false
 
     private let refresh = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -41,6 +42,11 @@ struct DiagnosticsView: View {
                     Image(systemName: "square.and.arrow.up")
                 }
                 Menu {
+                    Toggle(isOn: $detailed) {
+                        Label("Detailed Logging", systemImage: "text.magnifyingglass")
+                        Text("Extra lines for tracking down a problem")
+                    }
+                    Divider()
                     Button(role: .destructive) { confirmClear = true } label: {
                         Label(tab == .log ? "Clear Log" : "Delete Crash Reports", systemImage: "trash")
                     }

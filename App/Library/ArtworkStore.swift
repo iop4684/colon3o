@@ -366,7 +366,7 @@ actor ArtworkStore {
         // Apple has nothing (or didn't answer): a confident match from Deezer or MusicBrainz.
         if let artist = expect?.artist, let title = (entity == "album" ? expect?.album : expect?.title), !title.isEmpty,
            let data = await CoverSearch.fallbackCover(artist: artist, title: title, kind: entity == "album" ? .album : .song) {
-            Diagnostics.shared.log("Cover for \"\(query)\" from Deezer / MusicBrainz", category: "artwork")
+            Diagnostics.shared.detail("Cover for \"\(query)\" from Deezer / MusicBrainz", category: "artwork")
             return (try? data.write(to: file, options: .atomic)) != nil ? file : nil
         }
         if case .notFound = outcome {
@@ -484,7 +484,7 @@ actor CoverLookup {
         }
         if failed && seen.isEmpty { return .failed }
         let shown = seen.prefix(3).map { "\($0.collectionName ?? "?") by \($0.artistName ?? "?")" }.joined(separator: "; ")
-        Diagnostics.shared.log("Apple cover lookup \"\(query)\": no match among \(seen.count) (\(shown))", category: "artwork")
+        Diagnostics.shared.detail("Apple cover lookup \"\(query)\": no match among \(seen.count) (\(shown))", category: "artwork")
         return .notFound
     }
 
@@ -512,12 +512,12 @@ actor CoverLookup {
             let (data, response) = try await URLSession.shared.data(from: url)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200 else {
-                Diagnostics.shared.log("Apple cover lookup (\(url.query ?? "")): HTTP \(status)", category: "artwork")
+                Diagnostics.shared.detail("Apple cover lookup (\(url.query ?? "")): HTTP \(status)", category: "artwork")
                 return nil
             }
             return try JSONDecoder().decode(SearchResponse.self, from: data).results
         } catch {
-            Diagnostics.shared.log("Apple cover lookup (\(url.query ?? "")) failed: \(error.localizedDescription)", category: "artwork")
+            Diagnostics.shared.detail("Apple cover lookup (\(url.query ?? "")) failed: \(error.localizedDescription)", category: "artwork")
             return nil
         }
     }
@@ -533,7 +533,7 @@ actor CoverLookup {
 
     private func download(_ pick: SearchResponse.Result, query: String) async -> Outcome {
         guard let small = pick.artworkUrl100 else { return .notFound }
-        Diagnostics.shared.log("Apple cover lookup \"\(query)\": using \(pick.collectionName ?? "?") by \(pick.artistName ?? "?")",
+        Diagnostics.shared.detail("Apple cover lookup \"\(query)\": using \(pick.collectionName ?? "?") by \(pick.artistName ?? "?")",
                                category: "artwork")
         // Apple serves any size up to the original; 1500 px is sharp at the player's full width.
         let large = small.replacingOccurrences(of: "100x100bb", with: "1500x1500bb")

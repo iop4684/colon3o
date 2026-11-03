@@ -53,15 +53,59 @@ final class Diagnostics: NSObject, @unchecked Sendable {
         log("colon3 \(Bundle.appVersion) on \(device.systemName) \(device.systemVersion)", category: "app")
         installCrashHandlers()
         MXMetricManager.shared.add(self)
-        // Running out of file descriptors makes everything that opens a file fail at once (covers,
-        // fonts, the network), so the count is noted when it gets high.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.watchOpenFiles() }
     }
 
-    private func watchOpenFiles() {
+    /// Settings › Diagnostics & Logs › Detailed Logging (off by default): extra lines for tracking
+    /// down a problem (cover lookups, file protection, open files). Off, they cost nothing.
+    static let detailedKey = "diagnostics.detailed"
+    static var isDetailed: Bool { UserDefaults.standard.bool(forKey: detailedKey) }
+
+    /// A line only written with Detailed Logging on; the text isn't even built otherwise.
+    func detail(_ message: @autoclosure () -> String, category: String = "app") {
+        guard Self.isDetailed else { return }
+        log(message(), category: category)
+    }
+
+    /// Checked when you come back to the app: running out of file descriptors makes everything
+    /// that opens a file fail at once (covers, fonts, the network), so if it's happening, what's
+    /// holding them is noted, whatever the setting.
+    func checkOpenFiles() {
         let count = Self.openFileCount()
-        if count > 150 { log("Open files: \(count) (iOS allows about \(Self.fileLimit()))", category: "app") }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in self?.watchOpenFiles() }
+        if count > 1000 {
+            log("Open files: \(count) of \(Self.fileLimit()). \(Self.openFileSummary())", category: "app")
+        } else {
+            detail("Open files: \(count) of \(Self.fileLimit())")
+        }
+    }
+
+    /// What the open descriptors are: how many sockets, files and folders, and the folders most
+    /// of the files are in.
+    static func openFileSummary() -> String {
+        var kinds: [String: Int] = [:]
+        var places: [String: Int] = [:]
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        for fd in 0..<Int32(min(Int(getdtablesize()), 8192)) {
+            var info = stat()
+            guard fstat(fd, &info) == 0 else { continue }
+            let kind: String
+            switch info.st_mode & S_IFMT {
+            case S_IFSOCK: kind = "sockets"
+            case S_IFREG: kind = "files"
+            case S_IFDIR: kind = "folders"
+            case S_IFIFO: kind = "pipes"
+            case S_IFCHR: kind = "devices"
+            default: kind = "other"
+            }
+            kinds[kind, default: 0] += 1
+            if kind == "files" || kind == "folders", fcntl(fd, F_GETPATH, &path) != -1 {
+                let url = URL(fileURLWithPath: String(cString: path))
+                let place = url.deletingLastPathComponent().pathComponents.suffix(3).joined(separator: "/")
+                places[place, default: 0] += 1
+            }
+        }
+        let counts = kinds.sorted { $0.value > $1.value }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+        let top = places.sorted { $0.value > $1.value }.prefix(4).map { "\($0.value)× …/\($0.key)" }.joined(separator: "; ")
+        return counts + (top.isEmpty ? "" : ". Most in: " + top)
     }
 
     /// How many file descriptors (files and connections) the app has open right now.

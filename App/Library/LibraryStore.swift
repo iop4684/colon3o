@@ -205,9 +205,12 @@ final class LibraryStore: ObservableObject {
         let looksWrong = result.listingFailed || (result.tracks.isEmpty && !tracks.isEmpty
             && (suspiciousEmptyScans == 0 || !UIApplication.shared.isProtectedDataAvailable))
         if looksWrong {
-            Diagnostics.shared.log("Library scan found \(result.tracks.count) songs (folder readable: \(!result.listingFailed), "
+            // Once per streak: the retries every few seconds would otherwise fill the log.
+            if suspiciousEmptyScans == 0 || Diagnostics.isDetailed {
+                Diagnostics.shared.log("Library scan found \(result.tracks.count) songs (folder readable: \(!result.listingFailed), "
                                    + "files unlocked: \(UIApplication.shared.isProtectedDataAvailable)); keeping the "
                                    + "\(tracks.count) already shown and trying again", category: "library")
+            }
             suspiciousEmptyScans += 1
             isScanning = false
             rescanQueued = false

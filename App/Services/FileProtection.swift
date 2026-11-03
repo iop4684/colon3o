@@ -23,7 +23,7 @@ enum FileProtection {
                        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0],
                        fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]]
         let protection = (try? fileManager.attributesOfItem(atPath: folders[0].path))?[.protectionKey] as? FileProtectionType
-        Diagnostics.shared.log("File protection of Documents: \(protection?.rawValue ?? "unknown")", category: "app")
+        Diagnostics.shared.detail("File protection of Documents: \(protection?.rawValue ?? "unknown")", category: "app")
         let walkAll = !UserDefaults.standard.bool(forKey: doneKey)
         Task.detached(priority: .utility) {
             var changed = 0, failed = 0
@@ -32,7 +32,7 @@ enum FileProtection {
                 guard walkAll, let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else { continue }
                 for case let url as URL in walker { apply(to: url, changed: &changed, failed: &failed) }
             }
-            Diagnostics.shared.log("File protection: \(changed) items set readable while locked, \(failed) failed"
+            Diagnostics.shared.detail("File protection: \(changed) items set readable while locked, \(failed) failed"
                                    + (walkAll ? " (full pass)" : ""), category: "app")
             if walkAll, failed == 0 {
                 await MainActor.run { UserDefaults.standard.set(true, forKey: doneKey) }
@@ -57,10 +57,10 @@ enum FileProtection {
     private static func observeLockState() {
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main) { _ in
-            Diagnostics.shared.log("Files are about to lock (phone locked)", category: "app")
+            Diagnostics.shared.detail("Files are about to lock (phone locked)", category: "app")
         }
         center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { _ in
-            Diagnostics.shared.log("Files unlocked", category: "app")
+            Diagnostics.shared.detail("Files unlocked", category: "app")
         }
     }
 }

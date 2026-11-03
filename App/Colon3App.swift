@@ -124,8 +124,7 @@ struct Colon3App: App {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                Diagnostics.shared.log("Back in the app; open files: \(Diagnostics.openFileCount()) of \(Diagnostics.fileLimit())",
-                                       category: "app")
+                Diagnostics.shared.checkOpenFiles()
                 soulseek.reconnectIfNeeded()
                 // Covers that failed while the app was in the background (phone locked) are
                 // looked for again, so they don't stay blank until a restart.
