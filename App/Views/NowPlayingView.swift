@@ -1,4 +1,3 @@
-import CoreImage
 import AVKit
 import MediaPlayer
 import SwiftUI
@@ -348,8 +347,6 @@ struct PlayerBackground: View {
         }
     }
 
-    nonisolated(unsafe) private static let context = CIContext(options: [.useSoftwareRenderer: false])
-
     /// Shrinks the artwork to a small thumbnail and blurs that: the same look as a radius-70 blur
     /// over the full-screen picture, for a fraction of the work, done once per song.
     nonisolated private static func blur(_ image: UIImage?) -> UIImage? {
@@ -362,14 +359,10 @@ struct PlayerBackground: View {
         let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in
             image.draw(in: CGRect(origin: .zero, size: size))
         }
-        guard let input = CIImage(image: small) else { return small }
-        let extent = input.extent
-        let output = input.clampedToExtent()
-            .applyingGaussianBlur(sigma: 7)
-            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.4])
-            .cropped(to: extent)
-        guard let cgImage = context.createCGImage(output, from: extent) else { return small }
-        return UIImage(cgImage: cgImage)
+        guard let input = small.cgImage,
+              let blurred = SoftBlur.make(input, width: input.width, height: input.height, sigma: 7, saturation: 1.4)
+        else { return small }
+        return UIImage(cgImage: blurred)
     }
 }
 

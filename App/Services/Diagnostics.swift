@@ -83,6 +83,7 @@ final class Diagnostics: NSObject, @unchecked Sendable {
     static func openFileSummary() -> String {
         var kinds: [String: Int] = [:]
         var places: [String: Int] = [:]
+        var paths: [String: Int] = [:]
         var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         for fd in 0..<Int32(min(Int(getdtablesize()), 8192)) {
             var info = stat()
@@ -101,11 +102,15 @@ final class Diagnostics: NSObject, @unchecked Sendable {
                 let url = URL(fileURLWithPath: String(cString: path))
                 let place = url.deletingLastPathComponent().pathComponents.suffix(3).joined(separator: "/")
                 places[place, default: 0] += 1
+                paths[url.pathComponents.suffix(2).joined(separator: "/"), default: 0] += 1
             }
         }
         let counts = kinds.sorted { $0.value > $1.value }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
         let top = places.sorted { $0.value > $1.value }.prefix(4).map { "\($0.value)× …/\($0.key)" }.joined(separator: "; ")
-        return counts + (top.isEmpty ? "" : ". Most in: " + top)
+        // The same file open many times over is a leak; many different files in one folder isn't.
+        let repeated = paths.filter { $0.value > 20 }.sorted { $0.value > $1.value }.prefix(6)
+            .map { "\($0.value)× \($0.key)" }.joined(separator: "; ")
+        return counts + (top.isEmpty ? "" : ". Most in: " + top) + (repeated.isEmpty ? "" : ". Same file: " + repeated)
     }
 
     /// How many file descriptors (files and connections) the app has open right now.
