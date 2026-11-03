@@ -127,7 +127,10 @@ struct PlaylistsListContent: View {
                                 Label("Reorder Playlists…", systemImage: "arrow.up.arrow.down")
                             }
                         }
-                        Button(role: .destructive) { playlists.delete(playlist) } label: {
+                        Button(role: .destructive) {
+                            Confirm.ask("Delete “\(playlist.name)”?", message: "The songs stay in your library.",
+                                        button: "Delete Playlist") { playlists.delete(playlist) }
+                        } label: {
                             Label("Delete Playlist", systemImage: "trash")
                         }
                     }

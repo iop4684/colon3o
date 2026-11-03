@@ -228,12 +228,19 @@ struct NowPlayingView: View {
                     router.importLyrics(for: track)
                 },
                 removeLyricsFile: {
-                    library.removeLyricsFile(for: track)
-                    router.lyricsChanged()
+                    Confirm.ask("Remove the lyrics file?", message: "The .lrc next to “\(track.title)” is deleted. Lyrics are looked up online again.",
+                                button: "Remove") {
+                        library.removeLyricsFile(for: track)
+                        router.lyricsChanged()
+                    }
                 },
                 artworkFromPhotos: { router.pickArtworkPhoto(for: target) },
                 artworkFromFiles: { router.importArtworkFile(for: target) },
-                removeArtwork: { Task { await library.removeCustomArtwork(for: target) } },
+                removeArtwork: {
+                    Confirm.ask("Use the original artwork?", message: "The picture you chose is removed.", button: "Use Original") {
+                        Task { await library.removeCustomArtwork(for: target) }
+                    }
+                },
                 shareURL: track.url))
             .equatable()
     }

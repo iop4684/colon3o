@@ -250,7 +250,9 @@ struct SpotifyAccountSection: View {
                 LabeledContent("Client ID", value: spotify.clientID)
                     .font(.footnote.monospaced())
                     .lineLimit(1)
-                Button("Log Out", role: .destructive) { spotify.logOut() }
+                Button("Log Out", role: .destructive) {
+                    Confirm.ask("Log out of Spotify?", button: "Log Out") { spotify.logOut() }
+                }
             } else {
                 TextField("Client ID", text: $spotify.clientID)
                     .textInputAutocapitalization(.never)
@@ -537,7 +539,11 @@ struct ImportProgressView: View {
                             .foregroundStyle(.orange)
                     }
                     if job.isRunning {
-                        Button("Cancel Import", role: .destructive) { importer.cancel() }
+                        Button("Cancel Import", role: .destructive) {
+                            Confirm.ask("Cancel the import?", message: "Songs already downloaded stay.", button: "Cancel Import") {
+                                importer.cancel()
+                            }
+                        }
                     } else {
                         if job.notFoundCount > 0 {
                             Button("Retry Not Found (\(job.notFoundCount))") { importer.retryNotFound() }

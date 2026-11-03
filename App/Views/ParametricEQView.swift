@@ -127,13 +127,15 @@ struct ParametricEQEditor: View {
                 ForEach(equalizer.peqProfiles) { profile in
                     Menu(profile.name) {
                         Button("Use") { equalizer.applyPEQ(profile) }
-                        Button("Delete", role: .destructive) { equalizer.deletePEQ(profile) }
+                        Button("Delete", role: .destructive) {
+                            Confirm.ask("Delete the profile “\(profile.name)”?", button: "Delete") { equalizer.deletePEQ(profile) }
+                        }
                     }
                 }
             }
             Divider()
             Button(role: .destructive) {
-                equalizer.resetPEQ()
+                Confirm.ask("Clear all bands?", button: "Clear") { equalizer.resetPEQ() }
             } label: {
                 Label("Clear All Bands", systemImage: "trash")
             }

@@ -63,7 +63,9 @@ struct EqualizerView: View {
                             naming = true
                         }
                         Spacer()
-                        Button("Reset", role: .destructive) { equalizer.reset() }
+                        Button("Reset", role: .destructive) {
+                            Confirm.ask("Reset the equalizer?", message: "Every band goes back to 0 dB.", button: "Reset") { equalizer.reset() }
+                        }
                     }
                     .buttonStyle(.bordered)
                 } else {
@@ -111,7 +113,9 @@ struct EqualizerView: View {
                 ForEach(equalizer.customPresets) { preset in
                     Menu(preset.name) {
                         Button("Use") { equalizer.apply(preset) }
-                        Button("Delete", role: .destructive) { equalizer.deletePreset(preset) }
+                        Button("Delete", role: .destructive) {
+                            Confirm.ask("Delete the preset “\(preset.name)”?", button: "Delete") { equalizer.deletePreset(preset) }
+                        }
                     }
                 }
             }

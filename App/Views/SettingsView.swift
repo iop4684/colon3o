@@ -169,7 +169,10 @@ struct SoulseekSettings: View {
                 }
                 .disabled(username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
                 if soulseek.isLoggedIn {
-                    Button("Disconnect", role: .destructive) { soulseek.logOut() }
+                    Button("Disconnect", role: .destructive) {
+                        Confirm.ask("Disconnect from Soulseek?", message: "Searches, downloads and sharing stop until you log in again.",
+                                    button: "Disconnect") { soulseek.logOut() }
+                    }
                 }
             } footer: {
                 Text("Logging in with an unused username registers it. There's no password reset, so pick something you'll remember.")
@@ -398,7 +401,9 @@ struct DiscordSettings: View {
                     }
                 }
                 Section {
-                    Button("Disconnect Discord", role: .destructive) { discord.unlink() }
+                    Button("Disconnect Discord", role: .destructive) {
+                        Confirm.ask("Disconnect Discord?", button: "Disconnect") { discord.unlink() }
+                    }
                 }
             }
         }
@@ -479,7 +484,11 @@ struct LastFMSection: View {
                 if let lastError = lastfm.lastError {
                     Text(lastError).font(.footnote).foregroundStyle(.orange)
                 }
-                Button("Disconnect", role: .destructive) { lastfm.disconnect() }
+                Button("Disconnect", role: .destructive) {
+                    Confirm.ask("Disconnect Last.fm?", message: "Scrobbles waiting to be sent are dropped.", button: "Disconnect") {
+                        lastfm.disconnect()
+                    }
+                }
             } else {
                 TextField("API Key", text: $apiKey)
                     .textInputAutocapitalization(.never)

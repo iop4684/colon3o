@@ -154,7 +154,10 @@ struct DownloadsView: View {
                     Button { soulseek.clearFailed() } label: { Label("Clear Failed", systemImage: "exclamationmark.circle") }
                     Button { soulseek.clearFinished() } label: { Label("Clear All Finished", systemImage: "trash.slash") }
                     Divider()
-                    Button(role: .destructive) { soulseek.cancelAllActive() } label: {
+                    Button(role: .destructive) {
+                        Confirm.ask("Cancel all downloads?", message: "Everything still downloading or waiting is stopped.",
+                                    button: "Cancel Downloads") { soulseek.cancelAllActive() }
+                    } label: {
                         Label("Cancel All Downloads", systemImage: "xmark.circle")
                     }
                 } label: {
@@ -194,8 +197,15 @@ struct DownloadsView: View {
             .disabled(finishedSongs.isEmpty)
             Spacer()
             Button {
-                soulseek.remove(selection)
-                selection.removeAll()
+                let cancel = {
+                    soulseek.remove(selection)
+                    selection.removeAll()
+                }
+                if items.contains(where: \.isActive) {
+                    Confirm.ask("Cancel \(items.count) download\(items.count == 1 ? "" : "s")?", button: "Cancel Downloads", action: cancel)
+                } else {
+                    cancel()
+                }
             } label: {
                 Label(items.contains(where: \.isActive) ? "Cancel" : "Clear", systemImage: "xmark.circle")
             }
@@ -264,7 +274,11 @@ struct DownloadsView: View {
                     Label("Retry Failed", systemImage: "arrow.clockwise")
                 }
             }
-            Button(role: .destructive) { soulseek.cancelAll(from: group.username) } label: {
+            Button(role: .destructive) {
+                Confirm.ask("Cancel and remove everything from \(group.username)?", button: "Cancel and Remove") {
+                    soulseek.cancelAll(from: group.username)
+                }
+            } label: {
                 Label("Cancel and Remove All", systemImage: "xmark")
             }
         }

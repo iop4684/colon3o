@@ -308,7 +308,10 @@ struct ArtworkMenu: View {
             }
             if library.hasCustomArtwork(target) {
                 Button(role: .destructive) {
-                    Task { await library.removeCustomArtwork(for: target) }
+                    Confirm.ask("Use the original artwork?", message: "The picture you chose for “\(target.title)” is removed.",
+                                button: "Use Original") {
+                        Task { await library.removeCustomArtwork(for: target) }
+                    }
                 } label: {
                     Label("Use Original Artwork", systemImage: "arrow.uturn.backward")
                 }
@@ -430,5 +433,27 @@ struct ActionPopover<Label: View>: View {
                 .fixedSize()
                 .presentationCompactAdaptation(.popover)
             }
+    }
+}
+
+/// Asks before something that can't be undone (deleting, clearing, signing out). Shown with
+/// UIKit on top of whatever is on screen, so it works from menus, sheets and popovers alike.
+@MainActor
+enum Confirm {
+    static func ask(_ title: String, message: String? = nil, button: String, action: @escaping () -> Void) {
+        // Let a menu or popover that led here finish closing first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+            guard var top = scene?.keyWindow?.rootViewController ?? scene?.windows.first?.rootViewController else {
+                action()
+                return
+            }
+            while let presented = top.presentedViewController, !presented.isBeingDismissed { top = presented }
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            alert.addAction(UIAlertAction(title: button, style: .destructive) { _ in action() })
+            top.present(alert, animated: true)
+        }
     }
 }

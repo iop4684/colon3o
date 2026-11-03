@@ -243,7 +243,10 @@ struct BackupView: View {
             }
 
             if backup.search?.isRunning != true {
-                Button("Forget Missing Songs", role: .destructive) { backup.forgetMissing() }
+                Button("Forget Missing Songs", role: .destructive) {
+                    Confirm.ask("Forget the missing songs?", message: "The list of songs from the backup that aren't on this iPhone is cleared.",
+                                button: "Forget") { backup.forgetMissing() }
+                }
                     .disabled(backup.activity != nil)
             }
         } header: {

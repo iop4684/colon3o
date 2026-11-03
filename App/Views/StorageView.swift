@@ -208,7 +208,10 @@ struct StorageView: View {
                 }
 
                 Section {
-                    Button("Clear Cache") { clearCache() }
+                    Button("Clear Cache") {
+                        Confirm.ask("Clear the cache?", message: "Artwork, lyrics and tracklists fetched online are deleted and fetched again when needed. Your songs aren't touched.",
+                                    button: "Clear Cache") { clearCache() }
+                    }
                         .disabled(working || report.cache == 0)
                     if report.incomplete > 0 {
                         Button("Delete Unfinished Downloads", role: .destructive) { confirmIncomplete = true }
