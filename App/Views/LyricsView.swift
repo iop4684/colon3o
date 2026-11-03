@@ -638,11 +638,16 @@ private struct WordSweepRenderer: TextRenderer {
                 // (it used to be a shadow on every character, which stacked unevenly and was cut
                 // off at the sweep's edge).
                 if emphasis > 0.01 {
+                    // Only the shadow is drawn (a blur filter alone left almost nothing visible);
+                    // twice, wide and soft, then close and bright, for a glow like Apple Music's.
                     var glow = word
-                    glow.opacity = 0.7 * emphasis
-                    glow.addFilter(.blur(radius: 6 + 4 * emphasis))
                     if progress < 1 { litMask(&glow) }
-                    glow.draw(run)
+                    var wide = glow
+                    wide.addFilter(.shadow(color: .white.opacity(0.7 * emphasis), radius: 14, options: .shadowOnly))
+                    wide.draw(run)
+                    var close = glow
+                    close.addFilter(.shadow(color: .white.opacity(0.6 * emphasis), radius: 5, options: .shadowOnly))
+                    close.draw(run)
                 }
 
                 for slice in run {

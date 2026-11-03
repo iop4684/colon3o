@@ -8,7 +8,7 @@ struct LibraryView: View {
 
     enum Sort: String, CaseIterable, Identifiable {
         case title = "Title", artist = "Artist", recent = "Recently Added"
-        case plays = "Most Played", playlists = "In Most Playlists"
+        case plays = "Most Played"
         var id: String { rawValue }
         /// Sorted by name, with letter sections and the A–Z index.
         var isAlphabetical: Bool { self == .title || self == .artist }
@@ -133,13 +133,10 @@ struct LibraryView: View {
         switch sort {
         case .recent:
             return [Section(letter: "", items: items.sorted { added($0) > added($1) })]
-        case .plays, .playlists:
+        case .plays:
             // Highest first; an album or artist adds up its songs.
-            let counts = sort == .playlists ? playlists.membershipCounts() : [:]
             let score: (Item) -> Int = { item in
-                songs(item).reduce(0) { total, track in
-                    total + (sort == .playlists ? counts[track.id] ?? 0 : stats.plays(of: track))
-                }
+                songs(item).reduce(0) { total, track in total + stats.plays(of: track) }
             }
             let scored = items.map { (item: $0, score: score($0)) }
             return [Section(letter: "", items: scored.sorted { lhs, rhs in
@@ -327,9 +324,6 @@ struct LibraryView: View {
     private func songSubtitle(_ track: Track) -> String {
         var parts = [track.artist]
         switch sort {
-        case .playlists:
-            let count = playlists.playlists.filter { $0.trackIDs.contains(track.id) }.count
-            parts.append("in \(count) playlist\(count == 1 ? "" : "s")")
         case .plays:
             let plays = stats.plays(of: track)
             parts.append("\(plays) play\(plays == 1 ? "" : "s")")

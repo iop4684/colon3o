@@ -5,10 +5,35 @@ enum PlaylistRoute: Hashable {
     case user(UUID)
     case favorites
     case mostPlayed
+    /// Songs in no playlist (or at most a few): a way to hear what you haven't sorted yet.
+    case fewPlaylists
+
+    /// The most playlists a song may be in to show up in `fewPlaylists`.
+    static let fewPlaylistsKey = "smart.maxPlaylists"
 
     var playlistID: UUID? {
         if case let .user(id) = self { return id }
         return nil
+    }
+
+    var symbol: String? {
+        switch self {
+        case .favorites: return "star.fill"
+        case .mostPlayed: return "chart.bar.fill"
+        case .fewPlaylists: return "tray.fill"
+        case .user: return nil
+        }
+    }
+
+    static func fewPlaylistsName(_ max: Int) -> String {
+        max == 0 ? "Not in a Playlist" : "In \(max) Playlist\(max == 1 ? "" : "s") or Fewer"
+    }
+
+    /// Songs in at most `max` of your playlists, newest first.
+    @MainActor
+    static func fewPlaylistsTracks(library: LibraryStore, playlists: PlaylistStore, max: Int) -> [Track] {
+        let counts = playlists.membershipCounts()
+        return library.tracks.filter { (counts[$0.id] ?? 0) <= max }.sorted { $0.addedAt > $1.addedAt }
     }
 
     /// The key its listening is counted under in Stats.
@@ -17,6 +42,7 @@ enum PlaylistRoute: Hashable {
         case let .user(id): return id.uuidString
         case .favorites: return "favorites"
         case .mostPlayed: return "mostPlayed"
+        case .fewPlaylists: return "fewPlaylists"
         }
     }
 }
@@ -35,6 +61,7 @@ struct PlaylistsListContent: View {
     @State private var naming = false
     @State private var newName = ""
     @State private var reordering = false
+    @AppStorage(PlaylistRoute.fewPlaylistsKey) private var maxPlaylists = 0
 
     private var favoriteTracks: [Track] { library.tracks.filter { favorites.isFavorite($0) } }
 
@@ -77,6 +104,9 @@ struct PlaylistsListContent: View {
                 row(route: .favorites, name: "Favorite Songs", tracks: favoriteTracks, symbol: "star.fill")
                 row(route: .mostPlayed, name: "Most Played", tracks: stats.mostPlayed(limit: 4, in: library),
                     symbol: "chart.bar.fill", subtitle: "Top 50 by plays")
+                let few = PlaylistRoute.fewPlaylistsTracks(library: library, playlists: playlists, max: maxPlaylists)
+                row(route: .fewPlaylists, name: PlaylistRoute.fewPlaylistsName(maxPlaylists), tracks: few,
+                    symbol: "tray.fill", subtitle: "\(few.count) song\(few.count == 1 ? "" : "s")")
             }
 
             ForEach(playlists.playlists.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { playlist in
@@ -253,6 +283,7 @@ struct PlaylistDetailView: View {
     @State private var confirmDelete = false
     @State private var exportURL: ExportFile?
     @State private var pendingDelete: [Track]?
+    @AppStorage(PlaylistRoute.fewPlaylistsKey) private var maxPlaylists = 0
 
     private var playlist: Playlist? {
         if case let .user(id) = route { return playlists.playlist(id: id) }
@@ -264,6 +295,7 @@ struct PlaylistDetailView: View {
         case .user: return playlist?.name ?? "Playlist"
         case .favorites: return "Favorite Songs"
         case .mostPlayed: return "Most Played"
+        case .fewPlaylists: return PlaylistRoute.fewPlaylistsName(maxPlaylists)
         }
     }
 
@@ -273,6 +305,7 @@ struct PlaylistDetailView: View {
         case .favorites:
             return library.tracks.filter { favorites.isFavorite($0) }.sorted { SortKey.less($0.title, $1.title) }
         case .mostPlayed: return stats.mostPlayed(limit: 50, in: library)
+        case .fewPlaylists: return PlaylistRoute.fewPlaylistsTracks(library: library, playlists: playlists, max: maxPlaylists)
         }
     }
 
@@ -403,6 +436,7 @@ struct PlaylistDetailView: View {
         case .user: return "Tap ⋯ › Add Songs, or long-press any song and choose Add to Playlist."
         case .favorites: return "Star songs to collect them here."
         case .mostPlayed: return "Songs you play show up here."
+        case .fewPlaylists: return "Every song is in more playlists than that."
         }
     }
 
@@ -411,15 +445,28 @@ struct PlaylistDetailView: View {
             let plays = stats.plays(of: track)
             return "\(track.artist) · \(plays) play\(plays == 1 ? "" : "s")"
         }
+        if case .fewPlaylists = route, maxPlaylists > 0 {
+            let count = playlists.playlists.filter { $0.trackIDs.contains(track.id) }.count
+            return "\(track.artist) · in \(count == 0 ? "no" : String(count)) playlist\(count == 1 ? "" : "s")"
+        }
         return track.artist
     }
 
     private func header(_ tracks: [Track]) -> some View {
         VStack(spacing: 10) {
-            PlaylistArtwork(tracks: tracks, symbol: route == .favorites ? "star.fill" : (route == .mostPlayed ? "chart.bar.fill" : nil),
-                            playlistID: route.playlistID, size: 220)
+            PlaylistArtwork(tracks: tracks, symbol: route.symbol, playlistID: route.playlistID, size: 220)
                 .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
             Text(name).font(.title2.weight(.bold)).multilineTextAlignment(.center)
+            if case .fewPlaylists = route {
+                Picker("In at most", selection: $maxPlaylists) {
+                    Text("No playlist").tag(0)
+                    Text("≤ 1").tag(1)
+                    Text("≤ 2").tag(2)
+                    Text("≤ 3").tag(3)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 8)
+            }
             HStack(spacing: 12) {
                 Button { player.play(tracks, fromPlaylist: route.statsKey) } label: {
                     Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
