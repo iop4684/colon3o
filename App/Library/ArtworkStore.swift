@@ -210,6 +210,35 @@ actor ArtworkStore {
         return own
     }
 
+    enum AppleCover { case using, alreadyUsing, notFound, unreachable, off }
+
+    /// Looks up Apple's copy of this cover now, ahead of the background queue, and says how it went.
+    /// For the album you're looking at and for Refresh Artwork.
+    func appleCoverNow(for source: ArtworkSource, retryMisses: Bool = false) async -> AppleCover {
+        guard AppSettings.preferAppleArtwork else { return .off }
+        let query: String, entity: String, expect: CoverLookup.Expected
+        switch source {
+        case let .album(album):
+            (query, entity, expect) = ("\(album.artist) \(album.title)", "album", .init(album: album.title, artist: album.artist))
+        case let .track(track):
+            (query, entity, expect) = ("\(track.artist) \(track.title)", "song",
+                                       .init(album: track.album, artist: track.artist, title: track.title))
+        default:
+            return .off
+        }
+        let key = source.key
+        let hash = MD5.hex(key)
+        if FileManager.default.fileExists(atPath: directory.appendingPathComponent("web-\(hash).img").path) { return .alreadyUsing }
+        // Refresh Artwork tries an earlier miss again; just opening the album doesn't.
+        if retryMisses { try? FileManager.default.removeItem(at: directory.appendingPathComponent("web-\(hash).none")) }
+        let found = await online(query: query, entity: entity, cacheKey: key, expect: expect, urgent: true)
+        if found != nil {
+            for bucket in [160, 320, 640, 1200, 1600] { memory.removeObject(forKey: "\(key)@\(bucket)" as NSString) }
+            return .using
+        }
+        return FileManager.default.fileExists(atPath: directory.appendingPathComponent("web-\(hash).none").path) ? .notFound : .unreachable
+    }
+
     private func finishUpgrade(_ key: String, own: URL, apple: URL?) {
         upgrading.remove(key)
         guard let apple, AppSettings.preferAppleArtwork || Self.pixelSize(apple) > Self.pixelSize(own) else { return }
@@ -303,7 +332,8 @@ actor ArtworkStore {
         return file
     }
 
-    private func online(query: String, entity: String, cacheKey: String, expect: CoverLookup.Expected? = nil) async -> URL? {
+    private func online(query: String, entity: String, cacheKey: String, expect: CoverLookup.Expected? = nil,
+                        urgent: Bool = false) async -> URL? {
         let hash = MD5.hex(cacheKey)
         let file = directory.appendingPathComponent("web-\(hash).img")
         let miss = directory.appendingPathComponent("web-\(hash).none")
@@ -316,7 +346,7 @@ actor ArtworkStore {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard trimmed.count >= 3, trimmed.lowercased() != "unknown artist unknown album" else { return nil }
 
-        switch await CoverLookup.shared.artwork(query: trimmed, entity: entity, expect: expect) {
+        switch await CoverLookup.shared.artwork(query: trimmed, entity: entity, expect: expect, urgent: urgent) {
         case let .found(data):
             return (try? data.write(to: file, options: .atomic)) != nil ? file : nil
         case .notFound:
@@ -399,10 +429,14 @@ actor CoverLookup {
         var title: String?
     }
 
-    func artwork(query: String, entity: String, expect: Expected? = nil) async -> Outcome {
-        let wait = spacing - Date().timeIntervalSince(lastRequest)
-        lastRequest = Date().addingTimeInterval(max(wait, 0))
-        if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+    /// `urgent` skips the queue: for the cover on screen right now (an album you opened, Refresh
+    /// Artwork). Background lookups for a whole library are spaced out and can take minutes.
+    func artwork(query: String, entity: String, expect: Expected? = nil, urgent: Bool = false) async -> Outcome {
+        if !urgent {
+            let wait = spacing - Date().timeIntervalSince(lastRequest)
+            lastRequest = Date().addingTimeInterval(max(wait, 0))
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+        }
 
         var components = URLComponents(string: "https://itunes.apple.com/search")!
         components.queryItems = [
@@ -415,11 +449,22 @@ actor CoverLookup {
 
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .failed }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else {
+                Diagnostics.shared.log("Apple cover lookup \"\(query)\": HTTP \(status)", category: "artwork")
+                return .failed
+            }
             let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
             let candidates = decoded.results.filter { $0.artworkUrl100 != nil }
             let pick = expect.map { expected in candidates.first { Self.matches($0, expected) } } ?? candidates.first
-            guard let small = pick?.artworkUrl100 else { return .notFound }
+            guard let small = pick?.artworkUrl100 else {
+                let seen = candidates.prefix(3).map { "\($0.collectionName ?? "?") by \($0.artistName ?? "?")" }.joined(separator: "; ")
+                Diagnostics.shared.log("Apple cover lookup \"\(query)\": no match among \(candidates.count) (\(seen))",
+                                       category: "artwork")
+                return .notFound
+            }
+            Diagnostics.shared.log("Apple cover lookup \"\(query)\": using \(pick?.collectionName ?? "?") by \(pick?.artistName ?? "?")",
+                                   category: "artwork")
             // Apple serves any size up to the original; 1500 px is sharp at the player's full width.
             let large = small.replacingOccurrences(of: "100x100bb", with: "1500x1500bb")
             guard let imageURL = URL(string: large) else { return .notFound }
@@ -427,6 +472,7 @@ actor CoverLookup {
             guard (imageResponse as? HTTPURLResponse)?.statusCode == 200, !imageData.isEmpty else { return .failed }
             return .found(imageData)
         } catch {
+            Diagnostics.shared.log("Apple cover lookup \"\(query)\" failed: \(error.localizedDescription)", category: "artwork")
             return .failed
         }
     }

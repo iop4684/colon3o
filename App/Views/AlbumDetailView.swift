@@ -136,6 +136,12 @@ struct AlbumDetailView: View {
             }
             .padding(.top, 16)
             .task(id: "\(album.id)#\(album.tracks.count)") { completeness.refresh(album) }
+            .task(id: album.id) {
+                // The album you opened gets Apple's cover now, not when the background queue gets to it.
+                if !library.hasCustomArtwork(.album(album)), await ArtworkStore.shared.appleCoverNow(for: .album(album)) == .using {
+                    library.bumpArtwork()
+                }
+            }
 
             Text("\(album.tracks.count) song\(album.tracks.count == 1 ? "" : "s"), \(minutes(album.duration))")
                 .font(.footnote)
@@ -158,6 +164,16 @@ struct AlbumDetailView: View {
                         Task {
                             await ArtworkStore.shared.invalidate(.album(album))
                             library.bumpArtwork()
+                            let result = await ArtworkStore.shared.appleCoverNow(for: .album(album), retryMisses: true)
+                            library.bumpArtwork()
+                            switch result {
+                            case .using, .alreadyUsing: break
+                            case .notFound:
+                                router.message = "Apple Music doesn't list “\(album.title)” by \(album.artist) under that name, so the album's own cover is used."
+                            case .unreachable:
+                                router.message = "Couldn't reach Apple Music for the cover. The album's own cover is used for now."
+                            case .off: break
+                            }
                         }
                     } label: {
                         Label("Refresh Artwork", systemImage: "photo.badge.arrow.down")
