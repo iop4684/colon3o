@@ -43,7 +43,7 @@ struct LyricsView: View {
                 VStack(spacing: 12) {
                     ProgressView().tint(.white)
                     if !checking.isEmpty {
-                        Text("Checking " + checking.map(\.rawValue).joined(separator: " and ") + "\u{2026}")
+                        Text("Checking " + checking.spoken + "\u{2026}")
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.6))
                     }
@@ -61,8 +61,7 @@ struct LyricsView: View {
                     VStack(spacing: 12) {
                         message("No lyrics found", systemImage: "quote.bubble")
                             .overlay(alignment: .bottom) {
-                                Text("Checked " + (preferences.source(for: track.id).map { [$0] } ?? LyricsSource.allCases)
-                                    .map(\.rawValue).joined(separator: " and "))
+                                Text("Checked " + (preferences.source(for: track.id).map { [$0] } ?? LyricsSource.allCases).spoken)
                                     .font(.caption)
                                     .foregroundStyle(.white.opacity(0.45))
                                     .offset(y: 24)
@@ -108,20 +107,44 @@ struct LyricsView: View {
         }
         fetchedFrom = await Task.detached { LyricsService.fetchedSource(of: file) }.value
         let loaded = lyrics
-        romaji = await Task.detached(priority: .userInitiated) { Self.romanize(loaded) }.value
+        romaji = await Task.detached(priority: .userInitiated) { Self.romanize(loaded, human: [:]) }.value
         romajiVersion += 1
+        // Romaji written by people (Musixmatch's), when the song has it, replaces the automatic
+        // romaji line by line; it's fetched after the lyrics are on screen.
+        if Self.isJapanese(loaded) {
+            let human = await LyricsService.shared.romanized(cacheKey: track.id, title: track.title, artist: track.artist,
+                                                             album: albumTitle, duration: track.duration)
+            if !human.isEmpty {
+                romaji = await Task.detached(priority: .userInitiated) { Self.romanize(loaded, human: human) }.value
+                romajiVersion += 1
+            }
+        }
         checking = []
         isLoading = false
         router.lyricsLoaded()
     }
 
-    nonisolated private static func romanize(_ lyrics: Lyrics?) -> [Int: [Romaji.Piece]] {
+    nonisolated private static func isJapanese(_ lyrics: Lyrics?) -> Bool {
+        switch lyrics {
+        case let .synced(lines): return lines.contains { Romaji.containsJapanese($0.text) }
+        case let .plain(lines): return lines.contains { Romaji.containsJapanese($0) }
+        default: return false
+        }
+    }
+
+    /// Each line's romaji: Musixmatch's (written by people) when it has that line, otherwise made here.
+    nonisolated private static func romanize(_ lyrics: Lyrics?, human: [String: String]) -> [Int: [Romaji.Piece]] {
         var result: [Int: [Romaji.Piece]] = [:]
+        func pieces(_ text: String) -> [Romaji.Piece]? {
+            guard Romaji.containsJapanese(text) else { return nil }
+            if let written = human[Musixmatch.key(text)], let aligned = Romaji.pieces(written: written, for: text) { return aligned }
+            return Romaji.pieces(text)
+        }
         switch lyrics {
         case let .synced(lines):
-            for line in lines { result[line.id] = Romaji.pieces(line.text) }
+            for line in lines { result[line.id] = pieces(line.text) }
         case let .plain(lines):
-            for (index, line) in lines.enumerated() { result[index] = Romaji.pieces(line) }
+            for (index, line) in lines.enumerated() { result[index] = pieces(line) }
         default:
             break
         }

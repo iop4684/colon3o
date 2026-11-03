@@ -841,7 +841,9 @@ struct PlayerMoreMenu: View, Equatable {
                             Label("Lyrics Source", systemImage: "network")
                             Picker("Lyrics Source", selection: Binding(get: { source }, set: { new in close { actions.pickSource(new) } })) {
                                 Text("Auto").tag(LyricsSource?.none)
-                                ForEach(LyricsSource.allCases, id: \.self) { Text($0 == .petit ? "Petit" : $0.rawValue).tag(Optional($0)) }
+                                ForEach(LyricsSource.allCases, id: \.self) {
+                                    Text($0 == .petit ? "Petit" : ($0 == .musixmatch ? "MXM" : $0.rawValue)).tag(Optional($0))
+                                }
                             }
                             .pickerStyle(.segmented)
                         }

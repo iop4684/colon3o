@@ -18,6 +18,27 @@ enum Romaji {
         pieces(text).map { $0.map(\.text).joined(separator: " ") }
     }
 
+    /// Romaji written by people for a line, tied to the line's characters so it can still light up
+    /// in time: word for word onto the words found here when there are as many, otherwise spread
+    /// over the line in proportion to each word's length.
+    static func pieces(written: String, for text: String) -> [Piece]? {
+        let words = written.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return nil }
+        if let found = pieces(text), found.count == words.count {
+            return zip(found, words).map { Piece(text: $1, location: $0.location, length: $0.length) }
+        }
+        let total = (text as NSString).length
+        let weights = words.map { Double(max($0.count, 1)) }
+        let sum = weights.reduce(0, +)
+        var done = 0.0
+        return zip(words, weights).map { word, weight in
+            let start = Int((done / sum * Double(total)).rounded())
+            done += weight
+            let end = Int((done / sum * Double(total)).rounded())
+            return Piece(text: word, location: start, length: max(end - start, 1))
+        }
+    }
+
     /// The line's romaji, word by word, each tied to the characters it reads, so it can be lit in
     /// time with them. nil when the text has no Japanese in it.
     static func pieces(_ text: String) -> [Piece]? {

@@ -35,6 +35,14 @@ enum LyricsOrigin {
 enum LyricsSource: String, CaseIterable {
     case lrclib = "LRCLIB"
     case petit = "PetitLyrics"
+    case musixmatch = "Musixmatch"
+}
+
+extension Array where Element == LyricsSource {
+    /// "LRCLIB, PetitLyrics and Musixmatch".
+    var spoken: String {
+        ListFormatter.localizedString(byJoining: map(\.rawValue))
+    }
 }
 
 /// Per-song lyrics choices from the player's ••• menu: which online source to use, and how far to
@@ -148,7 +156,9 @@ actor LyricsService {
         var outcomes: [LyricsSource: Outcome] = [:]
         await withTaskGroup(of: (LyricsSource, Outcome).self) { group in
             for source in asked {
-                group.addTask { (source, await self.ask(source, title: title, artist: artist, album: album, duration: duration)) }
+                group.addTask {
+                    (source, await self.ask(source, title: title, artist: artist, album: album, duration: duration, cacheKey: cacheKey))
+                }
             }
             for await (source, outcome) in group {
                 outcomes[source] = outcome
@@ -163,11 +173,18 @@ actor LyricsService {
                 if case let .synced(lines) = lyrics { return lines.contains { line in !line.words.isEmpty } }
                 return false
             }),
+            (.musixmatch, { lyrics in
+                if case let .synced(lines) = lyrics { return lines.contains { line in !line.words.isEmpty } }
+                return false
+            }),
             (.lrclib, { if case .synced = $0 { return true }; return false }),
+            (.musixmatch, { if case .synced = $0 { return true }; return false }),
             (.petit, { if case .synced = $0 { return true }; return false }),
             (.lrclib, { if case .plain = $0 { return true }; return false }),
+            (.musixmatch, { if case .plain = $0 { return true }; return false }),
             (.petit, { if case .plain = $0 { return true }; return false }),
             (.lrclib, { $0 == .instrumental }),
+            (.musixmatch, { $0 == .instrumental }),
         ]
         for (source, accepts) in ranked {
             guard case let .found(lyrics, lrc, entry)? = outcomes[source], accepts(lyrics) else { continue }
@@ -183,7 +200,8 @@ actor LyricsService {
         return .notFound
     }
 
-    private func ask(_ source: LyricsSource, title: String, artist: String, album: String?, duration: Double) async -> Outcome {
+    private func ask(_ source: LyricsSource, title: String, artist: String, album: String?, duration: Double,
+                     cacheKey: String) async -> Outcome {
         do {
             switch source {
             case .lrclib:
@@ -194,11 +212,58 @@ actor LyricsService {
             case .petit:
                 guard let result = try await PetitLyrics.fetch(title: title, artist: artist) else { return .none }
                 return .found(result.lyrics, lrc: result.lrc, entry: nil)
+            case .musixmatch:
+                guard let result = try await Musixmatch.shared.fetch(title: title, artist: artist, album: album, duration: duration)
+                else {
+                    rememberRomanized([:], for: cacheKey)
+                    return .none
+                }
+                // Its romanization is kept whichever source's lyrics are shown (matched by line).
+                rememberRomanized(result.romanized, for: cacheKey)
+                return .found(result.lyrics, lrc: result.lrc, entry: nil)
             }
         } catch {
             Diagnostics.shared.log("Lyrics: \(source.rawValue) failed for \(artist) – \(title): \(error.localizedDescription)",
                                    category: "lyrics")
             return .failed
+        }
+    }
+
+    // MARK: Romanization
+
+    private struct StoredRomanization: Codable {
+        var lines: [String: String]
+        var fetched: Date
+    }
+
+    private func romanizationFile(_ cacheKey: String) -> URL {
+        directory.appendingPathComponent(MD5.hex(cacheKey) + "-romaji.json")
+    }
+
+    private func rememberRomanized(_ lines: [String: String], for cacheKey: String) {
+        if let data = try? JSONEncoder().encode(StoredRomanization(lines: lines, fetched: Date())) {
+            try? data.write(to: romanizationFile(cacheKey), options: .atomic)
+        }
+    }
+
+    /// Romaji written by people (Musixmatch's), by line (`Musixmatch.key`), for a song's lyrics.
+    /// Looked up once; a song Musixmatch doesn't romanize is asked again after a week.
+    func romanized(cacheKey: String, title: String, artist: String, album: String?, duration: Double) async -> [String: String] {
+        if let data = try? Data(contentsOf: romanizationFile(cacheKey)),
+           let stored = try? JSONDecoder().decode(StoredRomanization.self, from: data),
+           !stored.lines.isEmpty || Date().timeIntervalSince(stored.fetched) < 7 * 86_400 {
+            return stored.lines
+        }
+        guard AppSettings.lyricsLookupEnabled else { return [:] }
+        do {
+            let result = try await Musixmatch.shared.fetch(title: title, artist: artist, album: album, duration: duration)
+            let lines = result?.romanized ?? [:]
+            rememberRomanized(lines, for: cacheKey)
+            return lines
+        } catch {
+            Diagnostics.shared.log("Lyrics: Musixmatch romaji failed for \(artist) – \(title): \(error.localizedDescription)",
+                                   category: "lyrics")
+            return [:]
         }
     }
 
@@ -226,6 +291,7 @@ actor LyricsService {
     /// Search Again: drops the remembered miss and any .lrc fetched earlier (files you added stay).
     func forget(cacheKey: String, fetchedFile: URL? = nil) {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(MD5.hex(cacheKey) + ".json"))
+        try? FileManager.default.removeItem(at: romanizationFile(cacheKey))
         if let fetchedFile, Self.fetchedSource(of: fetchedFile) != nil {
             try? FileManager.default.removeItem(at: fetchedFile)
         }

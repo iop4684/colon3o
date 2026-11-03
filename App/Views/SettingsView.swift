@@ -254,7 +254,7 @@ struct LibrarySettings: View {
             } header: {
                 Text("Online")
             } footer: {
-                Text("Artwork comes from the iTunes Search API when a song has none of its own. With Prefer Apple Music Artwork, Apple's original cover is used whenever the album is found there (same name and artist), even if the files have one; lyrics come from LRCLIB, then PetitLyrics, and are saved next to the song as a .lrc for offline use. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
+                Text("Artwork comes from the iTunes Search API when a song has none of its own. With Prefer Apple Music Artwork, Apple's original cover is used whenever the album is found there (same name and artist), even if the files have one; lyrics come from LRCLIB, PetitLyrics and Musixmatch (the best one found wins; Japanese songs use Musixmatch's romaji when it has some), and are saved next to the song as a .lrc for offline use. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
             }
         }
         .navigationTitle("Library")
