@@ -156,7 +156,7 @@ actor ArtworkStore {
         switch source {
         case let .album(album):
             let local = folderImage(in: album.folder)
-            if let local, Self.pixelSize(local) >= Self.goodEnough { return local }
+            if !AppSettings.preferAppleArtwork, let local, Self.pixelSize(local) >= Self.goodEnough { return local }
             var inFile: URL?
             for track in album.tracks where track.hasEmbeddedArt {
                 if let found = await embedded(track, cacheKey: source.key) { inFile = found; break }
@@ -168,7 +168,7 @@ actor ArtworkStore {
 
         case let .track(track):
             let local = isLibraryRoot(track.folder) ? nil : folderImage(in: track.folder)
-            if let local, Self.pixelSize(local) >= Self.goodEnough { return local }
+            if !AppSettings.preferAppleArtwork, let local, Self.pixelSize(local) >= Self.goodEnough { return local }
             let inFile = track.hasEmbeddedArt ? await embedded(track, cacheKey: source.key) : nil
             return await withApple(Self.sharper(local, inFile), source: source, query: "\(track.artist) \(track.title)",
                                    entity: "song", expect: .init(album: track.album, artist: track.artist, title: track.title))

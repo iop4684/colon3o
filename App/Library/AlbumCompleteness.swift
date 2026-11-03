@@ -185,14 +185,39 @@ struct FolderListing: Codable {
     }
 
     func expectedTracks() -> [ExpectedTrack] {
-        files.map { file in
-            let shared = SharedFile(path: file.path, size: file.size, attributes: FileAttributes(duration: file.duration))
-            let parsed = MetadataReader.parseFilename((shared.filename as NSString).deletingPathExtension)
-            return ExpectedTrack(disc: 1, number: parsed.number, title: parsed.title,
-                                 duration: file.duration.map(Double.init), filename: shared.filename,
-                                 source: .soulseek(username: username, file: shared))
+        let shared = files.map { SharedFile(path: $0.path, size: $0.size, attributes: FileAttributes(duration: $0.duration)) }
+        var parsed = shared.map { MetadataReader.parseFilename(($0.filename as NSString).deletingPathExtension) }
+        // "Bring Me The Horizon - Fresh Bruises", "Artist - Album - 03 - Song": drop what every file
+        // name starts with, so only the song's own name is left (and its number, if that follows).
+        if let prefix = Self.sharedPrefix(parsed.map(\.title)) {
+            parsed = parsed.map { entry in
+                let rest = String(entry.title.dropFirst(prefix.count))
+                let again = MetadataReader.parseFilename(rest)
+                return (entry.number ?? again.number, again.title)
+            }
+        }
+        return zip(files, zip(shared, parsed)).map { file, pair in
+            let (sharedFile, entry) = pair
+            return ExpectedTrack(disc: 1, number: entry.number, title: entry.title,
+                                 duration: file.duration.map(Double.init), filename: sharedFile.filename,
+                                 source: .soulseek(username: username, file: sharedFile))
         }
         .sorted { ($0.number ?? 999, $0.title) < ($1.number ?? 999, $1.title) }
+    }
+
+    /// The longest "… - " that every title starts with (at least two titles, and something left
+    /// after it in each), or nil.
+    static func sharedPrefix(_ titles: [String]) -> String? {
+        guard titles.count >= 2, let first = titles.first else { return nil }
+        var candidates: [String] = []
+        var search = first.startIndex
+        while let range = first.range(of: " - ", range: search..<first.endIndex) {
+            candidates.append(String(first[..<range.upperBound]))
+            search = range.upperBound
+        }
+        return candidates.reversed().first { prefix in
+            titles.allSatisfy { $0.hasPrefix(prefix) && $0.count > prefix.count }
+        }
     }
 }
 
