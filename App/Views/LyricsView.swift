@@ -511,7 +511,8 @@ private struct WordByWordLine: View {
         for index in line.words.indices {
             let word = line.words[index]
             let time = timing(index)
-            let holds = time.known && time.end - time.start >= 1 && Self.canEmphasize(word.text)
+            // Only a note the lyrics say is held: its end is given, and it lasts 1.5 s or more.
+            let holds = time.known && time.end - time.start >= 1.5 && Self.canEmphasize(word.text)
             result = result + Text(word.text)
                 .customAttribute(WordSweep(index: index, start: time.start, span: time.end - time.start, holds: holds))
         }
@@ -563,9 +564,12 @@ private struct WordSweepRenderer: TextRenderer {
             let t = min(max(x, 0), 1)
             return t * t * (3 - 2 * t)
         }
-        let rise = ease((now - start) / min(0.7, max(span * 0.5, 0.2)))
+        // Builds up over the note, so it's strongest at the end of a long one; a note held 1.5 s
+        // gets a third of the effect, 3 s or more all of it.
+        let strength = min(max((span - 1) / 2, 1.0 / 3), 1)
+        let rise = ease((now - start) / max(span * 0.8, 0.3))
         let fall = 1 - ease((now - (start + span)) / 0.6)
-        return rise * fall
+        return strength * rise * fall
     }
 
     /// Room for the glow and swell to draw past the text's edges.
@@ -614,7 +618,7 @@ private struct WordSweepRenderer: TextRenderer {
 
                 var word = context
                 if emphasis > 0 {
-                    let scale = 1 + 0.03 * emphasis
+                    let scale = 1 + 0.02 * emphasis
                     word.translateBy(x: bounds.midX, y: bounds.midY)
                     word.scaleBy(x: scale, y: scale)
                     word.translateBy(x: -bounds.midX, y: -bounds.midY)
@@ -638,16 +642,12 @@ private struct WordSweepRenderer: TextRenderer {
                 // (it used to be a shadow on every character, which stacked unevenly and was cut
                 // off at the sweep's edge).
                 if emphasis > 0.01 {
-                    // Only the shadow is drawn (a blur filter alone left almost nothing visible);
-                    // twice, wide and soft, then close and bright, for a glow like Apple Music's.
+                    // A faint brightening close around the sung part, no visible halo: held notes
+                    // can only be told from the lyrics' timings, so a wrong guess mustn't stand out.
                     var glow = word
                     if progress < 1 { litMask(&glow) }
-                    var wide = glow
-                    wide.addFilter(.shadow(color: .white.opacity(0.7 * emphasis), radius: 14, options: .shadowOnly))
-                    wide.draw(run)
-                    var close = glow
-                    close.addFilter(.shadow(color: .white.opacity(0.6 * emphasis), radius: 5, options: .shadowOnly))
-                    close.draw(run)
+                    glow.addFilter(.shadow(color: .white.opacity(0.4 * emphasis), radius: 4, options: .shadowOnly))
+                    glow.draw(run)
                 }
 
                 for slice in run {
