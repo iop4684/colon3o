@@ -555,6 +555,19 @@ private struct WordSweepRenderer: TextRenderer {
     /// Characters either side whose timings are averaged for the rise, to even out bursts.
     static let riseSmoothing = 3
 
+    /// How strongly a held note glows and swells: eases in over its first part, stays while it's
+    /// held, and fades out gently after it ends (it used to rise and fall with a sine over the
+    /// note, so it was gone by the time the note finished and pulsed on long ones).
+    static func emphasis(now: Double, start: Double, span: Double) -> Double {
+        func ease(_ x: Double) -> Double {
+            let t = min(max(x, 0), 1)
+            return t * t * (3 - 2 * t)
+        }
+        let rise = ease((now - start) / min(0.7, max(span * 0.5, 0.2)))
+        let fall = 1 - ease((now - (start + span)) / 0.6)
+        return rise * fall
+    }
+
     /// Room for the glow and swell to draw past the text's edges.
     var displayPadding: EdgeInsets { EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16) }
 
@@ -597,7 +610,7 @@ private struct WordSweepRenderer: TextRenderer {
                 }
                 let bounds = run.typographicBounds.rect
                 let progress = min(max((now - sweep.start) / max(sweep.span, 0.05), 0), 1)
-                let emphasis = sweep.holds ? sin(.pi * progress) : 0
+                let emphasis = sweep.holds ? Self.emphasis(now: now, start: sweep.start, span: sweep.span) : 0
 
                 var word = context
                 if emphasis > 0 {
@@ -610,6 +623,27 @@ private struct WordSweepRenderer: TextRenderer {
                 // The sweep's soft leading edge, in this run's coordinates.
                 let edge = max(bounds.height * 0.45, 6)
                 let front = bounds.minX + (bounds.width + edge) * progress
+                let litMask: (inout GraphicsContext) -> Void = { layer in
+                    let left = bounds.minX - edge
+                    layer.clipToLayer { mask in
+                        let area = CGRect(x: left - 20, y: bounds.minY - bounds.height, width: max(front - left + 20, 0),
+                                          height: bounds.height * 3)
+                        mask.fill(Path(area), with: .linearGradient(Gradient(colors: [.white, .white.opacity(0)]),
+                                                                    startPoint: CGPoint(x: max(front - edge, left), y: 0),
+                                                                    endPoint: CGPoint(x: front, y: 0)))
+                    }
+                }
+
+                // A held note's glow: one soft blur of the word's sung part, drawn once behind it
+                // (it used to be a shadow on every character, which stacked unevenly and was cut
+                // off at the sweep's edge).
+                if emphasis > 0.01 {
+                    var glow = word
+                    glow.opacity = 0.7 * emphasis
+                    glow.addFilter(.blur(radius: 6 + 4 * emphasis))
+                    if progress < 1 { litMask(&glow) }
+                    glow.draw(run)
+                }
 
                 for slice in run {
                     let glyph = slice.typographicBounds.rect
@@ -636,18 +670,7 @@ private struct WordSweepRenderer: TextRenderer {
                     guard !unlit else { continue }
 
                     var lit = character
-                    if !fullyLit {
-                        let left = bounds.minX - edge
-                        lit.clipToLayer { mask in
-                            let area = CGRect(x: left, y: bounds.minY - bounds.height, width: max(front - left, 0), height: bounds.height * 3)
-                            mask.fill(Path(area), with: .linearGradient(Gradient(colors: [.white, .white.opacity(0)]),
-                                                                        startPoint: CGPoint(x: max(front - edge, left), y: 0),
-                                                                        endPoint: CGPoint(x: front, y: 0)))
-                        }
-                    }
-                    if emphasis > 0 {
-                        lit.addFilter(.shadow(color: .white.opacity(0.55 * emphasis), radius: 12 * emphasis))
-                    }
+                    if !fullyLit { litMask(&lit) }
                     lit.draw(slice)
                 }
             }
