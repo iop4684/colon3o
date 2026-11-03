@@ -16,6 +16,11 @@ actor ArtworkStore {
     private var inFlight: [String: Task<URL?, Never>] = [:]
     private var folderImages: [String: URL?] = [:]
     private var missingEmbedded = Set<String>()
+    /// Covers being looked up at Apple in the background to replace a small one.
+    private var upgrading = Set<String>()
+
+    /// Posted (object: the source's key) when a sharper cover from Apple replaced a small one.
+    nonisolated static let upgradedNotification = Notification.Name("colon3o.artworkUpgraded")
 
     nonisolated let directory: URL = {
         let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -30,7 +35,7 @@ actor ArtworkStore {
 
     /// `maxPixel` is the longest edge in pixels; images are decoded at (roughly) that size.
     func image(for source: ArtworkSource, maxPixel: Int) async -> UIImage? {
-        let bucket = [160, 320, 640, 1200].first { $0 >= maxPixel } ?? 1200
+        let bucket = [160, 320, 640, 1200, 1600].first { $0 >= maxPixel } ?? 1600
         let cacheKey = "\(source.key)@\(bucket)" as NSString
         if let cached = memory.object(forKey: cacheKey) { return cached }
 
@@ -156,15 +161,17 @@ actor ArtworkStore {
             for track in album.tracks where track.hasEmbeddedArt {
                 if let found = await embedded(track, cacheKey: source.key) { inFile = found; break }
             }
-            if let best = Self.sharper(local, inFile) { return best }
-            return await online(query: "\(album.artist) \(album.title)", entity: "album", cacheKey: source.key)
+            // Small or no art of its own: Apple's copy of the same cover, when the album is found
+            // there under the same name and artist, is usually far sharper.
+            return await withApple(Self.sharper(local, inFile), source: source, query: "\(album.artist) \(album.title)",
+                                   entity: "album", expect: .init(album: album.title, artist: album.artist))
 
         case let .track(track):
             let local = isLibraryRoot(track.folder) ? nil : folderImage(in: track.folder)
             if let local, Self.pixelSize(local) >= Self.goodEnough { return local }
             let inFile = track.hasEmbeddedArt ? await embedded(track, cacheKey: source.key) : nil
-            if let best = Self.sharper(local, inFile) { return best }
-            return await online(query: "\(track.artist) \(track.title)", entity: "song", cacheKey: source.key)
+            return await withApple(Self.sharper(local, inFile), source: source, query: "\(track.artist) \(track.title)",
+                                   entity: "song", expect: .init(album: track.album, artist: track.artist, title: track.title))
 
         case let .remote(query):
             return await online(query: query, entity: "album", cacheKey: source.key)
@@ -172,6 +179,36 @@ actor ArtworkStore {
         case .playlist:
             return nil  // the chosen picture was returned above; otherwise the mosaic is drawn
         }
+    }
+
+    /// The cover to show now: the song's own when it's sharp; otherwise Apple's if it was fetched
+    /// before and is sharper. A small cover of its own is shown straight away while Apple's is
+    /// looked up in the background (lookups are spaced out, and a library of small covers would
+    /// otherwise wait minutes); with no cover at all, the lookup is waited for.
+    private func withApple(_ own: URL?, source: ArtworkSource, query: String, entity: String,
+                           expect: CoverLookup.Expected) async -> URL? {
+        if let own, Self.pixelSize(own) >= Self.goodEnough { return own }
+        let fetched = directory.appendingPathComponent("web-\(MD5.hex(source.key)).img")
+        if FileManager.default.fileExists(atPath: fetched.path) { return Self.sharper(own, fetched) }
+        guard let own else {
+            return await online(query: query, entity: entity, cacheKey: source.key, expect: expect)
+        }
+        let key = source.key
+        if !upgrading.contains(key) {
+            upgrading.insert(key)
+            Task {
+                let apple = await self.online(query: query, entity: entity, cacheKey: key, expect: expect)
+                await self.finishUpgrade(key, own: own, apple: apple)
+            }
+        }
+        return own
+    }
+
+    private func finishUpgrade(_ key: String, own: URL, apple: URL?) {
+        upgrading.remove(key)
+        guard let apple, Self.pixelSize(apple) > Self.pixelSize(own) else { return }
+        for bucket in [160, 320, 640, 1200, 1600] { memory.removeObject(forKey: "\(key)@\(bucket)" as NSString) }
+        NotificationCenter.default.post(name: Self.upgradedNotification, object: key)
     }
 
     private func isLibraryRoot(_ folder: URL) -> Bool {
@@ -186,8 +223,9 @@ actor ArtworkStore {
         return found
     }
 
-    /// A cover this big (longest side, in pixels) is sharp everywhere it's shown.
-    nonisolated static let goodEnough = 600
+    /// A cover this big (longest side, in pixels) is sharp everywhere it's shown, even the full
+    /// width of the player on a large iPhone.
+    nonisolated static let goodEnough = 1000
 
     /// The image's longest side in pixels, read from its header only (0 if unreadable).
     nonisolated static func pixelSize(_ url: URL) -> Int {
@@ -259,7 +297,7 @@ actor ArtworkStore {
         return file
     }
 
-    private func online(query: String, entity: String, cacheKey: String) async -> URL? {
+    private func online(query: String, entity: String, cacheKey: String, expect: CoverLookup.Expected? = nil) async -> URL? {
         let hash = MD5.hex(cacheKey)
         let file = directory.appendingPathComponent("web-\(hash).img")
         let miss = directory.appendingPathComponent("web-\(hash).none")
@@ -272,7 +310,7 @@ actor ArtworkStore {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard trimmed.count >= 3, trimmed.lowercased() != "unknown artist unknown album" else { return nil }
 
-        switch await CoverLookup.shared.artwork(query: trimmed, entity: entity) {
+        switch await CoverLookup.shared.artwork(query: trimmed, entity: entity, expect: expect) {
         case let .found(data):
             return (try? data.write(to: file, options: .atomic)) != nil ? file : nil
         case .notFound:
@@ -346,7 +384,16 @@ actor CoverLookup {
     private var lastRequest = Date.distantPast
     private let spacing: TimeInterval = 3
 
-    func artwork(query: String, entity: String) async -> Outcome {
+    /// What the result must match: Apple's catalog often has a different album first (a single, a
+    /// compilation), and its cover would replace the right one, so with names given, only a
+    /// result with the same album (or song) name and artist is taken.
+    struct Expected: Sendable {
+        var album: String?
+        var artist: String?
+        var title: String?
+    }
+
+    func artwork(query: String, entity: String, expect: Expected? = nil) async -> Outcome {
         let wait = spacing - Date().timeIntervalSince(lastRequest)
         lastRequest = Date().addingTimeInterval(max(wait, 0))
         if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
@@ -356,7 +403,7 @@ actor CoverLookup {
             URLQueryItem(name: "term", value: query),
             URLQueryItem(name: "entity", value: entity),
             URLQueryItem(name: "media", value: "music"),
-            URLQueryItem(name: "limit", value: "3"),
+            URLQueryItem(name: "limit", value: expect == nil ? "3" : "10"),
         ]
         guard let url = components.url else { return .failed }
 
@@ -364,10 +411,11 @@ actor CoverLookup {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .failed }
             let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
-            guard let small = decoded.results.first(where: { $0.artworkUrl100 != nil })?.artworkUrl100 else {
-                return .notFound
-            }
-            let large = small.replacingOccurrences(of: "100x100bb", with: "1000x1000bb")
+            let candidates = decoded.results.filter { $0.artworkUrl100 != nil }
+            let pick = expect.map { expected in candidates.first { Self.matches($0, expected) } } ?? candidates.first
+            guard let small = pick?.artworkUrl100 else { return .notFound }
+            // Apple serves any size up to the original; 1500 px is sharp at the player's full width.
+            let large = small.replacingOccurrences(of: "100x100bb", with: "1500x1500bb")
             guard let imageURL = URL(string: large) else { return .notFound }
             let (imageData, imageResponse) = try await URLSession.shared.data(from: imageURL)
             guard (imageResponse as? HTTPURLResponse)?.statusCode == 200, !imageData.isEmpty else { return .failed }
@@ -380,8 +428,33 @@ actor CoverLookup {
     private struct SearchResponse: Decodable {
         struct Result: Decodable {
             let artworkUrl100: String?
+            let collectionName: String?
+            let artistName: String?
+            let trackName: String?
         }
         let results: [Result]
+    }
+
+    private static func matches(_ result: SearchResponse.Result, _ expected: Expected) -> Bool {
+        if let artist = expected.artist, !["various artists", "unknown artist"].contains(artist.lowercased()),
+           !similar(result.artistName, artist) { return false }
+        if let album = expected.album, !album.isEmpty { return similar(result.collectionName, album) }
+        if let title = expected.title { return similar(result.trackName, title) }
+        return true
+    }
+
+    /// Same name give or take case, punctuation and an edition note ("(Deluxe Edition)", "- EP").
+    private static func similar(_ found: String?, _ wanted: String) -> Bool {
+        guard let found else { return false }
+        func plain(_ text: String) -> String {
+            var text = text.lowercased()
+            text = text.replacingOccurrences(of: #"\s*[\(\[][^\)\]]*[\)\]]"#, with: "", options: .regularExpression)
+            text = text.replacingOccurrences(of: #"\s+-\s+(ep|single)$"#, with: "", options: .regularExpression)
+            return String(text.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
+        }
+        let a = plain(found), b = plain(wanted)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        return a == b || a.hasPrefix(b) || b.hasPrefix(a)
     }
 
     /// Turns a Soulseek folder path into an "artist album" search: drops format tags, years and

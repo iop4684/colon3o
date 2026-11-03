@@ -723,7 +723,7 @@ final class Player: ObservableObject {
     func reloadArtwork() {
         guard let id = current?.id, let source = artworkSource else { return }
         Task {
-            let image = await ArtworkStore.shared.image(for: source, maxPixel: 1200)
+            let image = await ArtworkStore.shared.image(for: source, maxPixel: 1600)
             guard self.current?.id == id, image !== self.artwork else { return }
             self.artwork = image
             self.updateNowPlaying()

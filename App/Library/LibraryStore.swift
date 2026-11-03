@@ -54,6 +54,10 @@ final class LibraryStore: ObservableObject {
         }
         // While the iPhone is locked its files can be unreadable; when they come back, look again
         // (songs, and covers that couldn't be read in the meantime).
+        // A sharper cover from Apple replaced a small one: redraw covers (once per burst).
+        NotificationCenter.default.addObserver(forName: ArtworkStore.upgradedNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleArtworkRefresh() }
+        }
         NotificationCenter.default.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.filesBecameReadable() }
@@ -80,6 +84,17 @@ final class LibraryStore: ObservableObject {
     }
 
     func bumpArtwork() { artworkRevision += 1 }
+
+    private var artworkRefreshScheduled = false
+    private func scheduleArtworkRefresh() {
+        guard !artworkRefreshScheduled else { return }
+        artworkRefreshScheduled = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            self.artworkRefreshScheduled = false
+            self.artworkRevision += 1
+        }
+    }
 
     // MARK: Lookup
 
