@@ -187,9 +187,15 @@ actor ArtworkStore {
     /// otherwise wait minutes); with no cover at all, the lookup is waited for.
     private func withApple(_ own: URL?, source: ArtworkSource, query: String, entity: String,
                            expect: CoverLookup.Expected) async -> URL? {
-        if let own, Self.pixelSize(own) >= Self.goodEnough { return own }
+        // Apple's covers are the publisher's originals; the ones that come with downloads are often
+        // scans, re-saved many times or padded with borders, even when they're big. So by default
+        // Apple's is used whenever the album is found there, and the song's own only otherwise.
+        let preferApple = AppSettings.preferAppleArtwork
+        if !preferApple, let own, Self.pixelSize(own) >= Self.goodEnough { return own }
         let fetched = directory.appendingPathComponent("web-\(MD5.hex(source.key)).img")
-        if FileManager.default.fileExists(atPath: fetched.path) { return Self.sharper(own, fetched) }
+        if FileManager.default.fileExists(atPath: fetched.path) {
+            return preferApple ? fetched : Self.sharper(own, fetched)
+        }
         guard let own else {
             return await online(query: query, entity: entity, cacheKey: source.key, expect: expect)
         }
@@ -206,7 +212,7 @@ actor ArtworkStore {
 
     private func finishUpgrade(_ key: String, own: URL, apple: URL?) {
         upgrading.remove(key)
-        guard let apple, Self.pixelSize(apple) > Self.pixelSize(own) else { return }
+        guard let apple, AppSettings.preferAppleArtwork || Self.pixelSize(apple) > Self.pixelSize(own) else { return }
         for bucket in [160, 320, 640, 1200, 1600] { memory.removeObject(forKey: "\(key)@\(bucket)" as NSString) }
         NotificationCenter.default.post(name: Self.upgradedNotification, object: key)
     }

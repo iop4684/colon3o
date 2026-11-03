@@ -216,6 +216,7 @@ struct TransfersSettings: View {
 struct LibrarySettings: View {
     @EnvironmentObject private var library: LibraryStore
     @AppStorage(AppSettings.artworkLookupKey) private var artworkLookup = true
+    @AppStorage(AppSettings.preferAppleArtworkKey) private var preferApple = true
     @AppStorage(AppSettings.lyricsLookupKey) private var lyricsLookup = true
     @AppStorage(AppSettings.showMissingKey) private var showMissing = true
     @AppStorage(AppSettings.musicBrainzKey) private var musicBrainz = true
@@ -238,6 +239,14 @@ struct LibrarySettings: View {
 
             Section {
                 Toggle("Look Up Missing Artwork", isOn: $artworkLookup)
+                Toggle("Prefer Apple Music Artwork", isOn: $preferApple)
+                    .disabled(!artworkLookup)
+                    .onChange(of: preferApple) { _, _ in
+                        Task {
+                            await ArtworkStore.shared.invalidateFolders()
+                            library.bumpArtwork()
+                        }
+                    }
                 Toggle("Fetch Lyrics", isOn: $lyricsLookup)
                 Toggle("Show Missing Album Songs", isOn: $showMissing)
                 Toggle("Look Up Tracklists on MusicBrainz", isOn: $musicBrainz)
@@ -245,7 +254,7 @@ struct LibrarySettings: View {
             } header: {
                 Text("Online")
             } footer: {
-                Text("Artwork comes from the iTunes Search API when a song has none of its own; lyrics come from LRCLIB, then PetitLyrics, and are saved next to the song as a .lrc for offline use. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
+                Text("Artwork comes from the iTunes Search API when a song has none of its own. With Prefer Apple Music Artwork, Apple's original cover is used whenever the album is found there (same name and artist), even if the files have one; lyrics come from LRCLIB, then PetitLyrics, and are saved next to the song as a .lrc for offline use. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
             }
         }
         .navigationTitle("Library")

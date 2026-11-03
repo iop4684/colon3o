@@ -107,7 +107,11 @@ enum AppSettings {
     static let bitPerfectKey = "bitPerfect"
     static let seedingKey = "seedingMode"
 
+    /// Use Apple's copy of a cover even when the song has its own (on by default).
+    static let preferAppleArtworkKey = "artwork.preferApple"
+
     static var artworkLookupEnabled: Bool { flag(artworkLookupKey) }
+    static var preferAppleArtwork: Bool { flag(artworkLookupKey) && flag(preferAppleArtworkKey) }
     static var lyricsLookupEnabled: Bool { flag(lyricsLookupKey) }
     static var scrobblingEnabled: Bool { flag(scrobblingKey) }
     static var seedingEnabled: Bool { UserDefaults.standard.bool(forKey: seedingKey) }
