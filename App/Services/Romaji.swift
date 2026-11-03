@@ -119,14 +119,33 @@ enum Romaji {
         return token
     }
 
-    /// Words whose usual reading in songs differs from the dictionary's first choice.
-    /// (Songs often use the everyday reading where the dictionary picks the formal one: 身体 is
-    /// sung "karada", not "shintai".)
-    private static let readings = ["私": "わたし", "僕": "ぼく", "貴方": "あなた", "今日": "きょう", "明日": "あした",
-                                   "一人": "ひとり", "二人": "ふたり", "大人": "おとな", "何": "なに", "日": "ひ",
-                                   "身体": "からだ", "体": "からだ", "故郷": "ふるさと", "此処": "ここ", "其処": "そこ",
-                                   "何処": "どこ", "今": "いま", "上手": "うま", "一緒": "いっしょ", "昨日": "きのう",
-                                   "下手": "へた", "眼": "め", "瞳": "ひとみ", "唄": "うた", "詩": "うた"]
+    /// Words whose usual reading in songs differs from the dictionary's first choice. Songs use
+    /// the everyday reading where the dictionary often picks another: 身体 is sung "karada", not
+    /// "shintai"; a single 君 is "kimi" (the reader took it for the "-kun" after a name), 空 "sora",
+    /// 月 "tsuki", 心 "kokoro". Only whole words are replaced, so compounds (月曜, 空港) keep theirs.
+    private static let readings: [String: String] = [
+        // People and pronouns.
+        "私": "わたし", "僕": "ぼく", "君": "きみ", "貴方": "あなた", "貴女": "あなた", "俺": "おれ", "誰": "だれ",
+        "僕ら": "ぼくら", "君ら": "きみら", "僕達": "ぼくたち", "君達": "きみたち", "私達": "わたしたち", "人": "ひと",
+        "一人": "ひとり", "二人": "ふたり", "大人": "おとな", "皆": "みんな", "自分": "じぶん",
+        // Time.
+        "今日": "きょう", "明日": "あした", "昨日": "きのう", "今": "いま", "日": "ひ", "日々": "ひび", "時": "とき",
+        "朝": "あさ", "夜": "よる", "夕": "ゆう", "昔": "むかし", "未来": "みらい", "永遠": "えいえん", "季節": "きせつ",
+        // Places and things.
+        "空": "そら", "月": "つき", "星": "ほし", "海": "うみ", "風": "かぜ", "雨": "あめ", "雪": "ゆき", "花": "はな",
+        "光": "ひかり", "影": "かげ", "色": "いろ", "道": "みち", "街": "まち", "町": "まち", "世界": "せかい", "景色": "けしき",
+        "故郷": "ふるさと", "此処": "ここ", "其処": "そこ", "何処": "どこ", "場所": "ばしょ", "窓": "まど", "扉": "とびら",
+        // The body and the heart.
+        "身体": "からだ", "体": "からだ", "心": "こころ", "胸": "むね", "手": "て", "目": "め", "眼": "め", "瞳": "ひとみ",
+        "声": "こえ", "涙": "なみだ", "夢": "ゆめ", "愛": "あい", "恋": "こい", "命": "いのち", "息": "いき", "笑顔": "えがお",
+        "想い": "おもい", "思い": "おもい", "思い出": "おもいで", "言葉": "ことば", "唄": "うた", "詩": "うた", "歌": "うた",
+        "音": "おと", "名前": "なまえ",
+        // Positions and the like, read as words rather than in compounds.
+        "上": "うえ", "下": "した", "前": "まえ", "後": "あと", "側": "そば", "隣": "となり", "先": "さき",
+        "間": "あいだ", "外": "そと", "奥": "おく", "端": "はし", "何": "なに", "事": "こと", "物": "もの", "所": "ところ",
+        "全て": "すべて", "一つ": "ひとつ", "二つ": "ふたつ", "一緒": "いっしょ", "大切": "たいせつ", "本当": "ほんとう",
+        "上手": "うま", "下手": "へた",
+    ]
 
     /// Kanji and kana suffixes written together with the word before them.
     private static let suffixes: Set<String> = ["的", "さん", "ちゃん", "くん", "様", "達", "たち", "性", "感"]
