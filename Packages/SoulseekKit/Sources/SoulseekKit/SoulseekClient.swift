@@ -122,7 +122,48 @@ public final class SoulseekClient: @unchecked Sendable {
     // MARK: - Public API
 
     public func connect(username: String, password: String) {
-        queue.async { self.openServer(username: username, password: password) }
+        queue.async {
+            self.openServer(username: username, password: password)
+            self.scheduleSweep()
+        }
+    }
+
+    // MARK: Idle peers
+
+    private var sweeping = false
+    /// Peer connections close after this long without traffic.
+    private static let peerIdleLimit: TimeInterval = 90
+    /// At most this many peer connections stay open; the quietest go first.
+    private static let peerLimit = 60
+
+    /// Every connection is a file descriptor, and iOS gives an app only a few hundred. Peers'
+    /// connections used to stay open until the peer closed them, and every search opens dozens,
+    /// so after a while the app ran out: covers, fonts and files then failed to open (blank covers,
+    /// text drawn as boxes). Idle ones are closed now, like Nicotine+ does.
+    private func scheduleSweep() {
+        guard !sweeping else { return }
+        sweeping = true
+        queue.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self else { return }
+            self.sweeping = false
+            self.sweepPeers()
+            if self.server != nil { self.scheduleSweep() }
+        }
+    }
+
+    private func sweepPeers() {
+        let now = Date()
+        var open = peers.values.filter { !$0.isClosed }
+        for link in open where link.isReady && link.outbox.isEmpty
+            && now.timeIntervalSince(link.lastActivity) > Self.peerIdleLimit {
+            closePeer(link, failed: false)
+        }
+        open = peers.values.filter { !$0.isClosed && $0.isReady }
+        if open.count > Self.peerLimit {
+            for link in open.sorted(by: { $0.lastActivity < $1.lastActivity }).prefix(open.count - Self.peerLimit) {
+                closePeer(link, failed: false)
+            }
+        }
     }
 
     public func disconnect() {
@@ -387,6 +428,7 @@ public final class SoulseekClient: @unchecked Sendable {
         }
 
         if let link = peers[username] {
+            link.lastActivity = Date()
             if link.isReady, let connection = link.connection {
                 frames.forEach { connection.send(content: $0, completion: .contentProcessed { _ in }) }
                 onSent?()
@@ -417,7 +459,11 @@ public final class SoulseekClient: @unchecked Sendable {
 
     private func openPiercedPeer(username: String, ip: String, port: UInt32, token: UInt32) {
         let link = PeerLink(username: username)
-        if let existing = peers[username], !existing.isReady {
+        // A connection the peer already has with us is replaced by the one it's opening now; the
+        // old one used to be dropped from the list but left open, one more leaked connection.
+        if let existing = peers[username], existing.isReady {
+            closePeer(existing, failed: false)
+        } else if let existing = peers[username] {
             // Hand queued messages over to the connection that is actually coming up.
             link.outbox = existing.outbox
             link.sentHandlers = existing.sentHandlers
@@ -486,6 +532,7 @@ public final class SoulseekClient: @unchecked Sendable {
     }
 
     private func handlePeerData(_ link: PeerLink, _ data: Data) {
+        link.lastActivity = Date()
         link.frames.append(data)
         while true {
             let body: Data
@@ -1044,6 +1091,8 @@ private final class PeerLink {
     var frames = FrameBuffer()
     var isReady = false
     var isClosed = false
+    /// When anything was last sent or received, for closing idle connections.
+    var lastActivity = Date()
     var outbox: [Data] = []
     var sentHandlers: [() -> Void] = []
     var failureHandlers: [() -> Void] = []

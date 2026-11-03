@@ -53,6 +53,27 @@ final class Diagnostics: NSObject, @unchecked Sendable {
         log("colon3 \(Bundle.appVersion) on \(device.systemName) \(device.systemVersion)", category: "app")
         installCrashHandlers()
         MXMetricManager.shared.add(self)
+        // Running out of file descriptors makes everything that opens a file fail at once (covers,
+        // fonts, the network), so the count is noted when it gets high.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.watchOpenFiles() }
+    }
+
+    private func watchOpenFiles() {
+        let count = Self.openFileCount()
+        if count > 150 { log("Open files: \(count) (iOS allows about \(Self.fileLimit()))", category: "app") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in self?.watchOpenFiles() }
+    }
+
+    /// How many file descriptors (files and connections) the app has open right now.
+    static func openFileCount() -> Int {
+        let limit = min(Int(getdtablesize()), 4096)
+        return (0..<limit).reduce(0) { count, fd in fcntl(Int32(fd), F_GETFD) != -1 ? count + 1 : count }
+    }
+
+    static func fileLimit() -> Int {
+        var limit = rlimit()
+        getrlimit(RLIMIT_NOFILE, &limit)
+        return Int(limit.rlim_cur)
     }
 
     // MARK: Logging
