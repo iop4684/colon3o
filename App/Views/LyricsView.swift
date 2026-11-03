@@ -417,8 +417,7 @@ enum LyricsFont {
 /// One line lighting up word by word, the way Apple Music does: a soft-edged sweep runs left to
 /// right through each word from when it starts to when it ends, at constant speed. As the sweep
 /// passes, each character eases up a little, so the line rises in one smooth wave rather than
-/// word by word. Notes held a second or more glow and swell. Romaji under the line sweeps across
-/// the whole line's time.
+/// word by word. Romaji under the line sweeps across the whole line's time.
 ///
 /// The playback position arrives about five times a second. Between updates the time is carried
 /// forward on the clock, and each update is blended in rather than jumped to, so the sweep never
@@ -503,7 +502,7 @@ private struct WordByWordLine: View {
             let start = time(at: piece.location)
             let end = time(at: piece.location + piece.length)
             result = result + Text(piece.text)
-                .customAttribute(WordSweep(index: index, start: start, span: max(end - start, 0.05), holds: false))
+                .customAttribute(WordSweep(index: index, start: start, span: max(end - start, 0.05)))
         }
         return result
     }
@@ -513,22 +512,10 @@ private struct WordByWordLine: View {
         for index in line.words.indices {
             let word = line.words[index]
             let time = timing(index)
-            // Only a note the lyrics say is held: its end is given, and it lasts 1.5 s or more.
-            let holds = time.known && time.end - time.start >= 1.5 && Self.canEmphasize(word.text)
             result = result + Text(word.text)
-                .customAttribute(WordSweep(index: index, start: time.start, span: time.end - time.start, holds: holds))
+                .customAttribute(WordSweep(index: index, start: time.start, span: time.end - time.start))
         }
         return result
-    }
-
-    /// Like Apple Music: CJK words of any length, other words of 2 to 7 letters.
-    private static func canEmphasize(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        let isCJK = trimmed.unicodeScalars.contains { scalar in
-            (0x3040...0x30FF).contains(scalar.value) || (0x3400...0x9FFF).contains(scalar.value)
-                || (0xAC00...0xD7AF).contains(scalar.value)
-        }
-        return isCJK ? !trimmed.isEmpty : (2...7).contains(trimmed.count)
     }
 }
 
@@ -537,8 +524,6 @@ private struct WordSweep: TextAttribute {
     var index: Int
     var start: Double
     var span: Double
-    /// A held note: glows and swells while it's sung.
-    var holds: Bool
 }
 
 /// Draws each character dimmed, then the sung part over it at full brightness through a mask
@@ -558,24 +543,8 @@ private struct WordSweepRenderer: TextRenderer {
     /// Characters either side whose timings are averaged for the rise, to even out bursts.
     static let riseSmoothing = 3
 
-    /// How strongly a held note glows and swells: eases in over its first part, stays while it's
-    /// held, and fades out gently after it ends (it used to rise and fall with a sine over the
-    /// note, so it was gone by the time the note finished and pulsed on long ones).
-    static func emphasis(now: Double, start: Double, span: Double) -> Double {
-        func ease(_ x: Double) -> Double {
-            let t = min(max(x, 0), 1)
-            return t * t * (3 - 2 * t)
-        }
-        // Builds up over the note, so it's strongest at the end of a long one; a note held 1.5 s
-        // gets a third of the effect, 3 s or more all of it.
-        let strength = min(max((span - 1) / 2, 1.0 / 3), 1)
-        let rise = ease((now - start) / max(span * 0.8, 0.3))
-        let fall = 1 - ease((now - (start + span)) / 0.6)
-        return strength * rise * fall
-    }
-
-    /// Room for the glow and swell to draw past the text's edges.
-    var displayPadding: EdgeInsets { EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16) }
+    /// Room for the rise to draw past the text's top edge.
+    var displayPadding: EdgeInsets { EdgeInsets(top: 6, leading: 2, bottom: 2, trailing: 2) }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         guard isActive else {
@@ -584,7 +553,7 @@ private struct WordSweepRenderer: TextRenderer {
         }
         // The rise follows the highlight: each character lifts as the sweep reaches it, but with
         // its timing averaged with its neighbours', so a burst of quick words rolls up as one
-        // even wave instead of popping, and a held note doesn't stall it.
+        // even wave instead of popping.
         var reached: [Double] = []
         for line in layout {
             for run in line {
@@ -616,15 +585,7 @@ private struct WordSweepRenderer: TextRenderer {
                 }
                 let bounds = run.typographicBounds.rect
                 let progress = min(max((now - sweep.start) / max(sweep.span, 0.05), 0), 1)
-                let emphasis = sweep.holds ? Self.emphasis(now: now, start: sweep.start, span: sweep.span) : 0
-
-                var word = context
-                if emphasis > 0 {
-                    let scale = 1 + 0.02 * emphasis
-                    word.translateBy(x: bounds.midX, y: bounds.midY)
-                    word.scaleBy(x: scale, y: scale)
-                    word.translateBy(x: -bounds.midX, y: -bounds.midY)
-                }
+                let word = context
 
                 // The sweep's soft leading edge, in this run's coordinates.
                 let edge = max(bounds.height * 0.45, 6)
@@ -638,18 +599,6 @@ private struct WordSweepRenderer: TextRenderer {
                                                                     startPoint: CGPoint(x: max(front - edge, left), y: 0),
                                                                     endPoint: CGPoint(x: front, y: 0)))
                     }
-                }
-
-                // A held note's glow: one soft blur of the word's sung part, drawn once behind it
-                // (it used to be a shadow on every character, which stacked unevenly and was cut
-                // off at the sweep's edge).
-                if emphasis > 0.01 {
-                    // A faint brightening close around the sung part, no visible halo: held notes
-                    // can only be told from the lyrics' timings, so a wrong guess mustn't stand out.
-                    var glow = word
-                    if progress < 1 { litMask(&glow) }
-                    glow.addFilter(.shadow(color: .white.opacity(0.4 * emphasis), radius: 4, options: .shadowOnly))
-                    glow.draw(run)
                 }
 
                 for slice in run {

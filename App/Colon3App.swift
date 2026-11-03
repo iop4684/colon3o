@@ -25,6 +25,7 @@ struct Colon3App: App {
 
     init() {
         Diagnostics.shared.start()
+        LiveContainerFix.apply()
         FileProtection.relax()
         // Discord presence was removed in 1.0.0: forget any token an earlier build saved.
         Keychain.delete(account: "token", service: "colon3.discord")
