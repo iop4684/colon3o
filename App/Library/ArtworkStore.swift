@@ -39,9 +39,12 @@ actor ArtworkStore {
         let cacheKey = "\(source.key)@\(bucket)" as NSString
         if let cached = memory.object(forKey: cacheKey) { return cached }
 
-        guard let file = await file(for: source) else { return nil }
+        guard let file = await file(for: source) else {
+            hadMisses = true
+            return nil
+        }
         let image = await Task.detached(priority: .userInitiated) { Self.downsample(file, maxPixel: bucket) }.value
-        if let image { memory.setObject(image, forKey: cacheKey) }
+        if let image { memory.setObject(image, forKey: cacheKey) } else { hadMisses = true }
         return image
     }
 
@@ -94,6 +97,15 @@ actor ArtworkStore {
     func forgetMisses() {
         folderImages.removeAll()
         missingEmbedded.removeAll()
+        hadMisses = false
+    }
+
+    /// Some cover couldn't be shown since the last check (it may only have been unreadable for
+    /// a moment, while the phone was locked).
+    private var hadMisses = false
+    func takeMisses() -> Bool {
+        defer { hadMisses = false }
+        return hadMisses
     }
 
     // MARK: Custom covers

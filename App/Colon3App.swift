@@ -125,6 +125,14 @@ struct Colon3App: App {
             switch phase {
             case .active:
                 soulseek.reconnectIfNeeded()
+                // Covers that failed while the app was in the background (phone locked) are
+                // looked for again, so they don't stay blank until a restart.
+                Task {
+                    if await ArtworkStore.shared.takeMisses() {
+                        await ArtworkStore.shared.forgetMisses()
+                        library.bumpArtwork()
+                    }
+                }
                 library.rescan()
                 lastfm.flush()
                 updates.checkIfDue()

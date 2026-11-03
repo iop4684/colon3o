@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Network
 import SoulseekKit
 
 /// A folder from one user's search results — usually an album.
@@ -162,6 +163,39 @@ final class SoulseekModel: ObservableObject {
                                 incompleteDirectory: support.appendingPathComponent("Incomplete", isDirectory: true))
         client.onEvent = { [weak self] event in self?.handle(event) }
         library.onSharesChanged = { [weak self] shares in self?.client.updateShares(shares) }
+        // When the network comes back (after the phone was locked, a Wi-Fi switch, leaving a
+        // dead zone), log in again straight away.
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor in self?.networkReturned() }
+        }
+        pathMonitor.start(queue: .main)
+    }
+
+    private let pathMonitor = NWPathMonitor()
+    private var retry: Task<Void, Never>?
+    private var retryDelay: Double = 3
+
+    private func networkReturned() {
+        guard started, connection != .loggedIn, connection != .connecting else { return }
+        retryDelay = 3
+        reconnectIfNeeded()
+    }
+
+    /// The connection dropped for a network reason ("Network is down" while the phone was locked,
+    /// the server going away): try again after 3 s, then 6, 12… up to a minute, until logged in.
+    /// Login problems (wrong password, logged in elsewhere) aren't retried.
+    private func scheduleRetry(after message: String) {
+        guard started, hasCredentials,
+              message.hasPrefix("Can't reach server") || message.hasPrefix("Disconnected from server") else { return }
+        retry?.cancel()
+        let delay = retryDelay
+        retryDelay = min(retryDelay * 2, 60)
+        retry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.reconnectIfNeeded()
+        }
     }
 
     var hasCredentials: Bool {
@@ -538,7 +572,14 @@ final class SoulseekModel: ObservableObject {
         switch event {
         case let .state(state):
             connection = state
-            if case let .failed(message) = state { appendLog(message) }
+            if case let .failed(message) = state {
+                appendLog(message)
+                scheduleRetry(after: message)
+            }
+            if state == .loggedIn {
+                retry?.cancel()
+                retryDelay = 3
+            }
 
         case let .searchResponse(response):
             if response.token == trackSearchToken {
