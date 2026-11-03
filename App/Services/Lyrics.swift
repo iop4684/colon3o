@@ -132,9 +132,9 @@ actor LyricsService {
     /// caller can offer a retry. `saveTo` is where found lyrics are kept as a .lrc; `onPending`
     /// hears which sources are still being asked.
     ///
-    /// All sources are asked at once and the best answer wins: word-synced (PetitLyrics), then
-    /// line-synced (LRCLIB, which also checks the song's length), then plain text from LRCLIB,
-    /// then from PetitLyrics. It's saved, so this only happens once per song.
+    /// All sources are asked at once and the best answer wins, Musixmatch first at each level:
+    /// word-synced (Musixmatch, PetitLyrics), then line-synced (Musixmatch, LRCLIB, PetitLyrics),
+    /// then plain text. It's saved, so this only happens once per song.
     ///
     /// `only` asks just that source (picked by hand for this song); its misses aren't remembered,
     /// so going back to automatic searches everywhere again.
@@ -169,22 +169,16 @@ actor LyricsService {
 
         // Best first.
         let ranked: [(LyricsSource, (Lyrics) -> Bool)] = [
-            (.petit, { lyrics in
-                if case let .synced(lines) = lyrics { return lines.contains { line in !line.words.isEmpty } }
-                return false
-            }),
-            (.musixmatch, { lyrics in
-                if case let .synced(lines) = lyrics { return lines.contains { line in !line.words.isEmpty } }
-                return false
-            }),
-            (.lrclib, { if case .synced = $0 { return true }; return false }),
-            (.musixmatch, { if case .synced = $0 { return true }; return false }),
-            (.petit, { if case .synced = $0 { return true }; return false }),
-            (.lrclib, { if case .plain = $0 { return true }; return false }),
-            (.musixmatch, { if case .plain = $0 { return true }; return false }),
-            (.petit, { if case .plain = $0 { return true }; return false }),
-            (.lrclib, { $0 == .instrumental }),
+            (.musixmatch, Self.wordSynced),
+            (.petit, Self.wordSynced),
+            (.musixmatch, Self.lineSynced),
+            (.lrclib, Self.lineSynced),
+            (.petit, Self.lineSynced),
+            (.musixmatch, Self.plain),
+            (.lrclib, Self.plain),
+            (.petit, Self.plain),
             (.musixmatch, { $0 == .instrumental }),
+            (.lrclib, { $0 == .instrumental }),
         ]
         for (source, accepts) in ranked {
             guard case let .found(lyrics, lrc, entry)? = outcomes[source], accepts(lyrics) else { continue }
@@ -199,6 +193,13 @@ actor LyricsService {
         if only == nil { remember(nil, in: file) }
         return .notFound
     }
+
+    private static func wordSynced(_ lyrics: Lyrics) -> Bool {
+        if case let .synced(lines) = lyrics { return lines.contains { !$0.words.isEmpty } }
+        return false
+    }
+    private static func lineSynced(_ lyrics: Lyrics) -> Bool { if case .synced = lyrics { return true }; return false }
+    private static func plain(_ lyrics: Lyrics) -> Bool { if case .plain = lyrics { return true }; return false }
 
     private func ask(_ source: LyricsSource, title: String, artist: String, album: String?, duration: Double,
                      cacheKey: String) async -> Outcome {
