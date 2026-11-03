@@ -8,7 +8,8 @@ import UIKit
 /// 0. a cover the user picked in the app (kept in Application Support, files untouched)
 /// 1. an image file next to the music (cover.jpg, folder.jpg, …)
 /// 2. art embedded in the audio file (extracted once into the cache folder)
-/// 3. an iTunes Search lookup, if enabled in Settings
+/// 3. an iTunes Search lookup, if enabled in Settings, then Deezer and MusicBrainz's Cover Art
+///    Archive when Apple has nothing that matches
 actor ArtworkStore {
     static let shared = ArtworkStore()
 
@@ -358,15 +359,20 @@ actor ArtworkStore {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard trimmed.count >= 3, trimmed.lowercased() != "unknown artist unknown album" else { return nil }
 
-        switch await CoverLookup.shared.artwork(query: trimmed, entity: entity, expect: expect, urgent: urgent) {
-        case let .found(data):
+        let outcome = await CoverLookup.shared.artwork(query: trimmed, entity: entity, expect: expect, urgent: urgent)
+        if case let .found(data) = outcome {
             return (try? data.write(to: file, options: .atomic)) != nil ? file : nil
-        case .notFound:
-            FileManager.default.createFile(atPath: miss.path, contents: nil)
-            return nil
-        case .failed:
-            return nil  // Network trouble: try again next time
         }
+        // Apple has nothing (or didn't answer): a confident match from Deezer or MusicBrainz.
+        if let artist = expect?.artist, let title = (entity == "album" ? expect?.album : expect?.title), !title.isEmpty,
+           let data = await CoverSearch.fallbackCover(artist: artist, title: title, kind: entity == "album" ? .album : .song) {
+            Diagnostics.shared.log("Cover for \"\(query)\" from Deezer / MusicBrainz", category: "artwork")
+            return (try? data.write(to: file, options: .atomic)) != nil ? file : nil
+        }
+        if case .notFound = outcome {
+            FileManager.default.createFile(atPath: miss.path, contents: nil)
+        }
+        return nil  // After network trouble: try again next time
     }
 
     nonisolated static func downsample(_ url: URL, maxPixel: Int) -> UIImage? {

@@ -9,6 +9,7 @@
   <a href="https://github.com/AmineWallah/colon3/releases/latest"><img src="https://img.shields.io/github/v/release/AmineWallah/colon3?label=Latest%20release&color=brightgreen" alt="Latest release"></a>
   <a href="https://github.com/AmineWallah/colon3/releases"><img src="https://img.shields.io/github/downloads/AmineWallah/colon3/total?label=Download&color=brightgreen" alt="Downloads"></a>
   <a href="https://aminewallah.github.io/colon3/source.html"><img src="https://img.shields.io/badge/AltStore%20%2F%20SideStore-Add%20source-8e44ad" alt="Add the AltStore / SideStore source"></a>
+  <a href="https://liberapay.com/AmineWallah/donate"><img src="https://img.shields.io/liberapay/receives/AmineWallah?logo=liberapay&label=Liberapay&color=f6c915" alt="Support on Liberapay"></a>
 </p>
 
 A native Soulseek client and music player for iOS. Search the Soulseek network, download straight to the phone, and play from a local library. No server or desktop client in between.
@@ -17,19 +18,22 @@ A native Soulseek client and music player for iOS. Search the Soulseek network, 
 - **Playlists:** your own (reorder, rename, .m3u8 import/export), plus Favorite Songs and Most Played.
 - **Home:** Apple Music-style shelves for trending songs, the top 100, recent releases and recently played, with one-tap downloads from Soulseek.
 - **Spotify, Apple Music and YouTube Music import:** rebuild a Spotify playlist or your Liked Songs, an Apple Music playlist, or a YouTube Music playlist link from your library, downloading what's missing from Soulseek in the original order.
-- **Artwork:** a cover you picked (Photos or Files), then cover files from the album folder, then art embedded in the music, then an iTunes lookup. Album downloads fetch the folder's cover (and any .lrc lyrics) from the peer too.
-- **Player:** Apple Music-style full screen with synced lyrics (a .lrc next to the song, else LRCLIB), queue editing, shuffle and repeat, playback speed, AirPlay, and the Liquid Glass mini player on iOS 26+.
+- **Artwork:** a cover you picked (Photos, Files, or Find Cover Online's top five from Apple Music, Deezer and MusicBrainz), then cover files from the album folder, then art embedded in the music, then an online lookup (Apple Music, then Deezer and MusicBrainz). Album downloads fetch the folder's cover (and any .lrc lyrics) from the peer too.
+- **Player:** Apple Music-style full screen with synced lyrics (a .lrc next to the song, else LRCLIB, or pick them yourself with Find Lyrics), queue editing, shuffle and repeat, playback speed, AirPlay, and the Liquid Glass mini player on iOS 26+.
 - **Autoplay:** when the queue ends, similar songs keep playing (Last.fm similar tracks and artists, else the same artist, most played or random). Picks you don't have get a Download button (or download on their own, if you turn that on) and play once they're downloaded from Soulseek.
 - **Sound:** a 10-band graphic EQ with presets, a parametric EQ that loads your headphones' AutoEQ profile, and a bit-perfect mode for USB DACs. Multichannel and Dolby Atmos files play through AVPlayer with spatial audio instead, with no EQ.
 - **Transfers:** multi-select retry/cancel/clear/delete, a Live Activity, Seeding Mode, and Wi-Fi Transfer from a computer's browser.
 - **Stats:** listening time, top songs/artists/albums, upload/download totals.
+- **Storage:** what takes up space by album, artist and song, plus songs you haven't played in 30 days, ready to delete.
 - **Backup:** your song list, playlists, favourites, stats and settings to Google Drive (daily if you like) or a file, optionally with the music itself. Restoring brings it all back and downloads missing songs from Drive or Soulseek.
 - **Last.fm** scrobbling with your own API key, which autoplay also uses for recommendations.
-- **Discord:** "Listening to *artist*" on your profile with the song, album and cover, after signing in once (builds made with Discord's SDK).
+- **Discord:** "Listening to *artist*" under your name, with the song, artist, album cover and progress on your profile, after signing in once (builds made with Discord's SDK).
 - **AltStore and SideStore:** add the colon3 source and get updates in the store.
 - **Siri and Shortcuts:** "Play music in colon3", "Play a song in colon3", "Play <playlist> in colon3", "Shuffle colon3", pause, skip and more, with no setup.
 
 Meant for sideloading. It won't pass App Store review.
+
+If colon3 is useful to you, you can support it on [Liberapay](https://liberapay.com/AmineWallah/donate).
 
 ## Screenshots
 
@@ -329,9 +333,9 @@ They're App Intents, so they need no SiriKit entitlement and work in sideloaded 
 
 ### Discord
 
-Settings › Discord › **Connect Discord** signs in through Discord's website (or a Discord login already in Safari) and turns it on. While a song plays, your profile shows "Listening to *artist*" with the song, album, cover and progress, and the status next to your name shows the song title. Pausing clears it. Covers are looked up in Apple's catalogue (the iTunes Search API), because Discord can only load images from the web; songs it can't find show the colon3 icon.
+Settings › Discord › **Connect Discord** signs in through Discord's website (or a Discord login already in Safari) and turns it on. While a song plays, the status under your name reads "Listening to *artist*", and your profile shows the song, artist, album cover and progress. Pausing clears it. Covers are looked up in Apple's catalogue (the iTunes Search API), because Discord can only load images from the web; songs it can't find show the colon3 icon.
 
-Discord's SDK documentation calls "Playing" the activity type that matters for it; colon3 asks for "Listening to *artist*" first. If Discord won't take the artist as the activity's name it uses "Listening to colon3" (with the artist under the song), and if it won't take "Listening" at all, "Playing colon3", saying so in Settings with a button to try again. It keeps working in the background as long as music plays, since that's what keeps colon3 running.
+The artist comes from Discord's status display setting (as in [Discord Music Presence](https://github.com/ungive/discord-music-presence)'s "Listening to Artist"); the activity itself stays named colon3. A failed update is retried a few seconds later. Only if "Listening" fails three times in a row before ever working does colon3 switch to "Playing" for the rest of the session, saying so in Settings with a button to try again. It keeps working in the background as long as music plays, since that's what keeps colon3 running.
 
 ### Backup
 

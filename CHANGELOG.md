@@ -3,6 +3,24 @@
 CI uses the section matching the build's version as the GitHub Release notes and as the
 "What's New" text in Settings › Software Update. Keep the heading format `## X.Y.Z`.
 
+## 1.4.0
+
+### New
+- **Storage:** Settings › Library › Storage shows how much space your music takes, and which albums, artists and songs take the most, with a bar for each. Swipe one to delete it.
+- **Songs you don't play:** the same page lists songs not played in 30 days: ones never played that were downloaded over 30 days ago, and ones last played over 30 days ago. Delete them all at once, or pick which. Favourites are left out unless you include them.
+- **Find Lyrics:** when the automatic lyrics are missing or wrong, search LRCLIB yourself from the song menu, the Now Playing menu or the lyrics view. Results show whether they're synced and whether their length matches your song; preview one and tap Use These Lyrics to save it as the song's .lrc.
+- **Find Cover Online:** Change Artwork › Find Cover Online shows the five best covers for an album or song from Apple Music, Deezer and MusicBrainz. Tap one to use it.
+
+### Changed
+- **Missing covers:** when Apple has no cover for an album or song, colon3 now also looks on Deezer and MusicBrainz's Cover Art Archive, and uses what it finds there if the title and artist match.
+
+## 1.3.1
+
+### Fixed
+- **Home:** the charts no longer sit on an endless spinner when Apple's chart server is slow. The last charts that loaded show straight away and are replaced when fresh ones arrive; a server that doesn't answer is given up on after 25 seconds per try, and failures are written to Diagnostics & Logs.
+- **Home when Apple Music's charts are down:** Apple's chart server has been answering "502 Bad Gateway". When it does, colon3 now uses the charts saved in the last three days, or else the old iTunes Store chart (top sellers rather than most played), and says so above the shelves.
+- **Discord showing "Playing" instead of "Listening to":** in 1.3.0 a single update Discord didn't accept, often just a rate limit, switched the status to "Playing" for good. Failed updates are now retried, "Playing" is only used after repeated failures and only until colon3 restarts, and the stuck setting is cleared. The status under your name now reads "Listening to *artist*" through Discord's status display setting, like Discord Music Presence does.
+
 ## 1.3.0
 
 Everything new since 1.2.0.

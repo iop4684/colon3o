@@ -32,6 +32,11 @@ struct RouterPresenters: ViewModifier {
             }
             .sheet(item: active ? $router.albumRequest : .constant(nil)) { request in
                 AlbumRequestSheet(request: request)
+            .sheet(item: active ? $router.lyricsSearch : .constant(nil)) { request in
+                LyricsSearchSheet(track: request.track)
+            }
+            .sheet(item: active ? $router.coverSearch : .constant(nil)) { request in
+                CoverSearchSheet(target: request.target)
             }
             .fileImporter(isPresented: active ? $router.showImporter : .constant(false),
                           allowedContentTypes: router.importKind.types,

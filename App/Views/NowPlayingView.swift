@@ -204,6 +204,11 @@ struct NowPlayingView: View {
             actions: PlayerMoreMenu.Actions(
                 equalizer: { showEqualizer = true },
                 addToPlaylist: { router.addToPlaylist([track]) },
+                findLyrics: {
+                    mode = .lyrics
+                    router.findLyrics(for: track)
+                },
+                findCover: { router.findCover(for: target) },
                 searchAgain: {
                     mode = .lyrics
                     Task {
@@ -795,6 +800,8 @@ struct PlayerMoreMenu: View, Equatable {
     struct Actions {
         let equalizer: () -> Void
         let addToPlaylist: () -> Void
+        let findLyrics: () -> Void
+        let findCover: () -> Void
         let searchAgain: () -> Void
         let pickSource: (LyricsSource?) -> Void
         let adjustTiming: () -> Void
@@ -843,6 +850,7 @@ struct PlayerMoreMenu: View, Equatable {
                     row("Add to Playlist…", "text.badge.plus", then: actions.addToPlaylist)
                     divider
                     row("Search Lyrics Again", "quote.bubble", then: actions.searchAgain)
+                    row("Find Lyrics…", "magnifyingglass", then: actions.findLyrics)
                     if lyricsFile != .yours {
                         VStack(alignment: .leading, spacing: 8) {
                             Label("Lyrics Source", systemImage: "network")
@@ -866,6 +874,7 @@ struct PlayerMoreMenu: View, Equatable {
                         row("Remove Lyrics File", "doc.badge.minus", role: .destructive, then: actions.removeLyricsFile)
                     }
                     divider
+                    row("Find Cover Online…", "magnifyingglass", then: actions.findCover)
                     row("Artwork from Photos…", "photo.on.rectangle", then: actions.artworkFromPhotos)
                     row("Artwork from Files…", "folder", then: actions.artworkFromFiles)
                     if hasCustomArtwork {

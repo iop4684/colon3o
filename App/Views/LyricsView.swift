@@ -67,7 +67,9 @@ struct LyricsView: View {
                                     .offset(y: 24)
                             }
                             .frame(maxHeight: 120)
-                        Button("Import .lrc File…") { router.importLyrics(for: track) }
+                        Button("Find Lyrics\u{2026}") { router.findLyrics(for: track) }
+                            .buttonStyle(.borderedProminent)
+                        Button("Import .lrc File\u{2026}") { router.importLyrics(for: track) }
                             .buttonStyle(.bordered)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

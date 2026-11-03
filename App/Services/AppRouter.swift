@@ -55,6 +55,18 @@ enum ImportKind {
     }
 }
 
+/// "Find Lyrics…": search LRCLIB by hand for one song.
+struct LyricsSearchRequest: Identifiable {
+    let id = UUID()
+    let track: Track
+}
+
+/// "Find Cover Online…" for an album or song.
+struct CoverSearchRequest: Identifiable {
+    let id = UUID()
+    let target: ArtworkTarget
+}
+
 /// A backup to look at before restoring it.
 struct BackupRestoreRequest: Identifiable {
     let id = UUID()
@@ -111,6 +123,8 @@ final class AppRouter: ObservableObject {
     @Published var tagEditing: TagEditTarget?
     /// Merge with Album / Add to Album.
     @Published var albumRequest: AlbumRequest?
+    @Published var lyricsSearch: LyricsSearchRequest?
+    @Published var coverSearch: CoverSearchRequest?
 
     init() {
         // The Home tab is hidden in this fork; a saved Home selection opens Library instead.
@@ -123,6 +137,8 @@ final class AppRouter: ObservableObject {
     func importLyrics(for track: Track) { presentImporter(.lyrics(track)) }
     func importArtworkFile(for target: ArtworkTarget) { presentImporter(.artwork(target)) }
     func importBackupFile() { presentImporter(.backup) }
+    func findLyrics(for track: Track) { lyricsSearch = LyricsSearchRequest(track: track) }
+    func findCover(for target: ArtworkTarget) { coverSearch = CoverSearchRequest(target: target) }
     func pickArtworkPhoto(for target: ArtworkTarget) {
         photoTarget = target
         showPhotoPicker = true
