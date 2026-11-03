@@ -432,47 +432,99 @@ actor CoverLookup {
     /// `urgent` skips the queue: for the cover on screen right now (an album you opened, Refresh
     /// Artwork). Background lookups for a whole library are spaced out and can take minutes.
     func artwork(query: String, entity: String, expect: Expected? = nil, urgent: Bool = false) async -> Outcome {
+        // Apple's search ranks a short album name ("amo") below the artist's other albums and
+        // features, so with names to match, more ways in are tried until one finds it:
+        // 1. "artist album", 2. the album name alone as an album name, 3. every album the
+        //    artist has. (Songs: "artist title", then the title alone as a song name.)
+        var attempts: [[URLQueryItem]] = [[.init(name: "term", value: query), .init(name: "entity", value: entity),
+                                           .init(name: "limit", value: expect == nil ? "3" : "50")]]
+        if let expect {
+            if entity == "album", let album = expect.album, !album.isEmpty {
+                attempts.append([.init(name: "term", value: album), .init(name: "entity", value: "album"),
+                                 .init(name: "attribute", value: "albumTerm"), .init(name: "limit", value: "200")])
+            } else if let title = expect.title, !title.isEmpty {
+                attempts.append([.init(name: "term", value: title), .init(name: "entity", value: "song"),
+                                 .init(name: "attribute", value: "songTerm"), .init(name: "limit", value: "200")])
+            }
+        }
+        var failed = false
+        var seen: [SearchResponse.Result] = []
+        for items in attempts {
+            switch await search(items, urgent: urgent) {
+            case let .some(results):
+                seen += results
+                if let pick = choose(results, expect) { return await download(pick, query: query) }
+            case .none:
+                failed = true
+            }
+        }
+        if entity == "album", let expect, let artist = expect.artist, let album = expect.album, !album.isEmpty,
+           !["various artists", "unknown artist"].contains(artist.lowercased()),
+           let results = await artistAlbums(artist, urgent: urgent) {
+            seen += results
+            if let pick = choose(results, expect) { return await download(pick, query: query) }
+        }
+        if failed && seen.isEmpty { return .failed }
+        let shown = seen.prefix(3).map { "\($0.collectionName ?? "?") by \($0.artistName ?? "?")" }.joined(separator: "; ")
+        Diagnostics.shared.log("Apple cover lookup \"\(query)\": no match among \(seen.count) (\(shown))", category: "artwork")
+        return .notFound
+    }
+
+    private func choose(_ results: [SearchResponse.Result], _ expect: Expected?) -> SearchResponse.Result? {
+        let candidates = results.filter { $0.artworkUrl100 != nil }
+        guard let expect else { return candidates.first }
+        let matching = candidates.filter { Self.matches($0, expect) }
+        // The release with exactly the same name first (the album rather than its deluxe edition).
+        let name = expect.album ?? expect.title ?? ""
+        return matching.first { Self.similar(expect.album != nil ? $0.collectionName : $0.trackName, name, exactly: true) }
+            ?? matching.first
+    }
+
+    /// One iTunes Search request (spaced out unless urgent); nil when it failed.
+    private func search(_ items: [URLQueryItem], urgent: Bool, path: String = "search") async -> [SearchResponse.Result]? {
         if !urgent {
             let wait = spacing - Date().timeIntervalSince(lastRequest)
             lastRequest = Date().addingTimeInterval(max(wait, 0))
             if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
         }
-
-        var components = URLComponents(string: "https://itunes.apple.com/search")!
-        components.queryItems = [
-            URLQueryItem(name: "term", value: query),
-            URLQueryItem(name: "entity", value: entity),
-            URLQueryItem(name: "media", value: "music"),
-            URLQueryItem(name: "limit", value: expect == nil ? "3" : "10"),
-        ]
-        guard let url = components.url else { return .failed }
-
+        var components = URLComponents(string: "https://itunes.apple.com/\(path)")!
+        components.queryItems = items + (path == "search" ? [.init(name: "media", value: "music")] : [])
+        guard let url = components.url else { return nil }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200 else {
-                Diagnostics.shared.log("Apple cover lookup \"\(query)\": HTTP \(status)", category: "artwork")
-                return .failed
+                Diagnostics.shared.log("Apple cover lookup (\(url.query ?? "")): HTTP \(status)", category: "artwork")
+                return nil
             }
-            let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
-            let candidates = decoded.results.filter { $0.artworkUrl100 != nil }
-            let pick = expect.map { expected in candidates.first { Self.matches($0, expected) } } ?? candidates.first
-            guard let small = pick?.artworkUrl100 else {
-                let seen = candidates.prefix(3).map { "\($0.collectionName ?? "?") by \($0.artistName ?? "?")" }.joined(separator: "; ")
-                Diagnostics.shared.log("Apple cover lookup \"\(query)\": no match among \(candidates.count) (\(seen))",
-                                       category: "artwork")
-                return .notFound
-            }
-            Diagnostics.shared.log("Apple cover lookup \"\(query)\": using \(pick?.collectionName ?? "?") by \(pick?.artistName ?? "?")",
-                                   category: "artwork")
-            // Apple serves any size up to the original; 1500 px is sharp at the player's full width.
-            let large = small.replacingOccurrences(of: "100x100bb", with: "1500x1500bb")
-            guard let imageURL = URL(string: large) else { return .notFound }
+            return try JSONDecoder().decode(SearchResponse.self, from: data).results
+        } catch {
+            Diagnostics.shared.log("Apple cover lookup (\(url.query ?? "")) failed: \(error.localizedDescription)", category: "artwork")
+            return nil
+        }
+    }
+
+    /// All albums of the artist with this name.
+    private func artistAlbums(_ artist: String, urgent: Bool) async -> [SearchResponse.Result]? {
+        guard let artists = await search([.init(name: "term", value: artist), .init(name: "entity", value: "musicArtist"),
+                                          .init(name: "limit", value: "5")], urgent: urgent),
+              let id = artists.first(where: { Self.similar($0.artistName, artist) })?.artistId else { return nil }
+        return await search([.init(name: "id", value: String(id)), .init(name: "entity", value: "album"),
+                             .init(name: "limit", value: "200")], urgent: urgent, path: "lookup")
+    }
+
+    private func download(_ pick: SearchResponse.Result, query: String) async -> Outcome {
+        guard let small = pick.artworkUrl100 else { return .notFound }
+        Diagnostics.shared.log("Apple cover lookup \"\(query)\": using \(pick.collectionName ?? "?") by \(pick.artistName ?? "?")",
+                               category: "artwork")
+        // Apple serves any size up to the original; 1500 px is sharp at the player's full width.
+        let large = small.replacingOccurrences(of: "100x100bb", with: "1500x1500bb")
+        guard let imageURL = URL(string: large) else { return .notFound }
+        do {
             let (imageData, imageResponse) = try await URLSession.shared.data(from: imageURL)
             guard (imageResponse as? HTTPURLResponse)?.statusCode == 200, !imageData.isEmpty else { return .failed }
             return .found(imageData)
         } catch {
-            Diagnostics.shared.log("Apple cover lookup \"\(query)\" failed: \(error.localizedDescription)", category: "artwork")
             return .failed
         }
     }
@@ -483,6 +535,7 @@ actor CoverLookup {
             let collectionName: String?
             let artistName: String?
             let trackName: String?
+            let artistId: Int?
         }
         let results: [Result]
     }
@@ -496,7 +549,7 @@ actor CoverLookup {
     }
 
     /// Same name give or take case, punctuation and an edition note ("(Deluxe Edition)", "- EP").
-    private static func similar(_ found: String?, _ wanted: String) -> Bool {
+    private static func similar(_ found: String?, _ wanted: String, exactly: Bool = false) -> Bool {
         guard let found else { return false }
         func plain(_ text: String) -> String {
             var text = text.lowercased()
@@ -506,7 +559,9 @@ actor CoverLookup {
         }
         let a = plain(found), b = plain(wanted)
         guard !a.isEmpty, !b.isEmpty else { return false }
-        return a == b || a.hasPrefix(b) || b.hasPrefix(a)
+        if a == b { return true }
+        // "Album" vs "Album Remastered"; not "amo" vs "among the …".
+        return !exactly && min(a.count, b.count) >= 4 && (a.hasPrefix(b) || b.hasPrefix(a))
     }
 
     /// Turns a Soulseek folder path into an "artist album" search: drops format tags, years and
