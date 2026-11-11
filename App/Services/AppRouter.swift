@@ -121,7 +121,7 @@ final class AppRouter: ObservableObject {
     @Published var songInfo: Track?
     /// Edit Info, for a song or a whole album.
     @Published var tagEditing: TagEditTarget?
-    /// Merge with Album / Add to Album.
+    /// Retag into Album / Add to Album.
     @Published var albumRequest: AlbumRequest?
     @Published var lyricsSearch: LyricsSearchRequest?
     @Published var coverSearch: CoverSearchRequest?

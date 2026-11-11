@@ -34,6 +34,7 @@ struct LibraryView: View {
     @State private var selecting = false
     @State private var selection = Set<String>()
     @State private var pendingDelete: [Track]?
+    @State private var confirmMerge = false
 
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
@@ -54,6 +55,17 @@ struct LibraryView: View {
                     selecting = false
                 }
                 .onChange(of: scope) { _, _ in selection.removeAll() }
+                .confirmationDialog("Merge into which album?", isPresented: $confirmMerge, titleVisibility: .visible) {
+                    let chosen = selectedAlbums
+                    ForEach(Array(chosen.prefix(8))) { album in
+                        Button(album.title) {
+                            library.merge(chosen, into: album)
+                            endSelection()
+                        }
+                    }
+                } message: {
+                    Text("The other albums' songs join the one you pick, which keeps its name and cover. No files are changed, and the album's menu can separate them again.")
+                }
         }
     }
 
@@ -428,7 +440,8 @@ struct LibraryView: View {
     }
 
     private var selectedAlbums: [Album] {
-        filteredItems.compactMap { item in
+        guard scope == .albums else { return [] }
+        return filteredItems.compactMap { item -> Album? in
             guard selection.contains(item.id), case let .album(album) = item else { return nil }
             return album
         }
@@ -443,6 +456,7 @@ struct LibraryView: View {
 
     private var selectionBar: some View {
         let tracks = selectedTracks
+        let albumCount = selectedAlbums.count
         return HStack {
             Button { player.play(tracks); endSelection() } label: { Label("Play", systemImage: "play.fill") }
             Spacer()
@@ -454,7 +468,20 @@ struct LibraryView: View {
             Spacer()
             if scope == .albums {
                 let albums = selectedAlbums, singles = selectedSingles
-                Button { router.mergeAlbums(albums, songs: singles); endSelection() } label: {
+                // Two ways to merge: Merge Albums only groups them in the app (undoable, files
+                // untouched); Retag into Album writes the chosen album's tags into the files.
+                Menu {
+                    Button { confirmMerge = true } label: {
+                        Label("Merge Albums", systemImage: "square.stack")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .disabled(albumCount < 2)
+                    Button { router.mergeAlbums(albums, songs: singles); endSelection() } label: {
+                        Label("Retag into Album\u{2026}", systemImage: "tag")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .disabled(albums.isEmpty || albums.count + singles.count < 2)
+                } label: {
                     Label("Merge", systemImage: "arrow.triangle.merge")
                 }
                 .disabled(albums.isEmpty || albums.count + singles.count < 2)

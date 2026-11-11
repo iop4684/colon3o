@@ -254,7 +254,7 @@ struct TrackMenuItems: View {
             Button {
                 router.mergeAlbum(album)
             } label: {
-                Label("Merge with Album…", systemImage: "arrow.triangle.merge")
+                Label("Retag into Album…", systemImage: "tag")
             }
             Button {
                 router.searchSoulseek(for: album)

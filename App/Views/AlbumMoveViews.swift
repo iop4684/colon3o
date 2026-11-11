@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Merge with Album / Add to Album: songs join an album by taking on its album, album artist and
+/// Retag into Album / Add to Album: songs join an album by taking on its album, album artist and
 /// year tags, written into the files like Edit Info does.
 enum AlbumMove {
     /// The album as the library shows it. The album artist is written even when the album's songs
@@ -26,10 +26,10 @@ struct AlbumRequestSheet: View {
         switch request.action {
         case let .merge(album):
             AlbumPickerSheet(
-                title: "Merge Into “\(album.title)”",
+                title: "Retag into “\(album.title)”",
                 note: "The album you pick joins this one, which keeps its name.",
                 albums: library.albums.filter { $0.id != album.id },
-                mergeQuestion: { "Merge “\($0.title)” into “\(album.title)”?" }
+                mergeQuestion: { "Retag “\($0.title)” into “\(album.title)”?" }
             ) { picked in
                 await move(picked.tracks, into: album, merging: [picked])
             }
@@ -41,7 +41,7 @@ struct AlbumRequestSheet: View {
                 albums: albums,
                 mergeQuestion: { picked in
                     let count = albums.count + songs.count - 1
-                    return "Merge \(count) other item\(count == 1 ? "" : "s") into “\(picked.title)”?"
+                    return "Retag \(count) other item\(count == 1 ? "" : "s") into “\(picked.title)”?"
                 }
             ) { picked in
                 let others = albums.filter { $0.id != picked.id }
@@ -175,7 +175,7 @@ struct AlbumPickerSheet: View {
                                 isPresented: Binding(get: { pendingMerge != nil }, set: { if !$0 { pendingMerge = nil } }),
                                 titleVisibility: .visible,
                                 presenting: pendingMerge) { album in
-                Button("Merge") { pick(album) }
+                Button("Retag") { pick(album) }
                 Button("Cancel", role: .cancel) {}
             }
         }
