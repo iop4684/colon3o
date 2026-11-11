@@ -20,6 +20,7 @@ struct Colon3App: App {
     @StateObject private var drive: GoogleDrive
     @StateObject private var backup: BackupService
     @StateObject private var discord: DiscordPresence
+    @StateObject private var portSharing: PortSharing
     @Environment(\.scenePhase) private var scenePhase
     private let transferMonitor: TransferMonitor
 
@@ -64,6 +65,7 @@ struct Colon3App: App {
         _discord = StateObject(wrappedValue: DiscordPresence(player: player, library: library))
         _library = StateObject(wrappedValue: library)
         _soulseek = StateObject(wrappedValue: soulseek)
+        _portSharing = StateObject(wrappedValue: PortSharing(soulseek: soulseek))
         _player = StateObject(wrappedValue: player)
         playerActions = PlayerActions(player)
         _lastfm = StateObject(wrappedValue: lastfm)
@@ -102,6 +104,7 @@ struct Colon3App: App {
                 .environmentObject(drive)
                 .environmentObject(backup)
                 .environmentObject(discord)
+                .environmentObject(portSharing)
                 .onAppear {
                     soulseek.start()
                     lastfm.flush()

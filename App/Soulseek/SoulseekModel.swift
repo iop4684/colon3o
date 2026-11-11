@@ -98,6 +98,8 @@ final class DownloadBadge: ObservableObject {
 @MainActor
 final class SoulseekModel: ObservableObject {
     @Published private(set) var connection: ClientState = .disconnected
+    /// Whether peers can connect to us (see PortSharing).
+    @Published private(set) var listenerStatus: ListenerStatus = .off
     @Published private(set) var results: [FolderResult] = []
     @Published private(set) var responseCount = 0
     @Published private(set) var currentQuery = ""
@@ -646,6 +648,9 @@ final class SoulseekModel: ObservableObject {
                 uploads.insert(UploadItem(id: update.id, state: update.state, sent: update.sent, size: update.size), at: 0)
                 if uploads.count > 100 { uploads.removeLast(uploads.count - 100) }
             }
+
+        case let .listener(status):
+            listenerStatus = status
 
         case let .log(line):
             appendLog(line)

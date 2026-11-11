@@ -12,7 +12,7 @@ name: CI/CD
 
 on:
   push:
-    branches: [main, beta]
+    branches: [main, beta, listener]
   workflow_dispatch:
 
 concurrency:
@@ -49,7 +49,7 @@ jobs:
         run: |
           version="$(sed -nE 's/^ *MARKETING_VERSION: *"?([^"]+)"?.*/\1/p' project.yml | head -1)"
           channel=stable
-          if [[ "$GITHUB_REF" == refs/heads/beta ]]; then channel=beta; fi
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then channel=beta; fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"

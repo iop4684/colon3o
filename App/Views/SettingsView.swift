@@ -177,6 +177,8 @@ struct SoulseekSettings: View {
             } footer: {
                 Text("Logging in with an unused username registers it. There's no password reset, so pick something you'll remember.")
             }
+
+            PeerConnectionSettings()
         }
         .navigationTitle("Soulseek")
         .onAppear { username = soulseek.username }
