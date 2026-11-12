@@ -521,22 +521,33 @@ struct AddToPlaylistSheet: View {
                     Label("New Playlist…", systemImage: "plus")
                 }
                 ForEach(playlists.playlists) { playlist in
+                    let present = Set(playlist.trackIDs)
+                    let alreadyIn = request.tracks.filter { present.contains($0.id) }.count
+                    let allIn = !request.tracks.isEmpty && alreadyIn == request.tracks.count
                     Button {
                         playlists.add(request.tracks, to: playlist)
                         dismiss()
                     } label: {
                         HStack(spacing: 12) {
                             PlaylistArtwork(tracks: playlists.tracks(of: playlist, in: library), playlistID: playlist.id, size: 48)
+                                .opacity(allIn ? 0.55 : 1)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(playlist.name).foregroundStyle(.primary)
-                                Text("\(playlist.trackIDs.count) songs").font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Text(subtitle(songs: playlist.trackIDs.count, alreadyIn: alreadyIn, allIn: allIn))
+                                    .font(.caption)
+                                    .foregroundStyle(alreadyIn > 0 ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                                    .lineLimit(1)
                             }
-                            Spacer()
-                            if request.tracks.allSatisfy({ playlist.trackIDs.contains($0.id) }) {
-                                Image(systemName: "checkmark").foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            if allIn {
+                                AddedBadge()
+                            } else if alreadyIn > 0 {
+                                AddedBadge(text: "\(alreadyIn)/\(request.tracks.count)", partial: true)
                             }
                         }
                     }
+                    .accessibilityValue(allIn ? "Already added" : (alreadyIn > 0 ? "\(alreadyIn) of \(request.tracks.count) already added" : ""))
                 }
             }
             .navigationTitle(request.tracks.count == 1 ? "Add to Playlist" : "Add \(request.tracks.count) Songs")
@@ -554,6 +565,32 @@ struct AddToPlaylistSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private func subtitle(songs: Int, alreadyIn: Int, allIn: Bool) -> String {
+        let count = "\(songs) song\(songs == 1 ? "" : "s")"
+        if allIn { return request.tracks.count == 1 ? "Already added · \(count)" : "All already added · \(count)" }
+        if alreadyIn > 0 { return "\(alreadyIn) of \(request.tracks.count) already added · \(count)" }
+        return count
+    }
+}
+
+/// The pill on Add to Playlist rows showing the song (or some of the songs) is already in that playlist.
+private struct AddedBadge: View {
+    var text = "Added"
+    var partial = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: partial ? "circle.lefthalf.filled" : "checkmark.circle.fill")
+            Text(text)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.tint.opacity(0.18), in: Capsule())
+        .fixedSize()
     }
 }
 

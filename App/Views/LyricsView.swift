@@ -58,19 +58,28 @@ struct LyricsView: View {
                 case .instrumental:
                     message("Instrumental", systemImage: "music.note")
                 case .notFound:
-                    VStack(spacing: 12) {
-                        message("No lyrics found", systemImage: "quote.bubble")
-                            .overlay(alignment: .bottom) {
-                                Text("Checked " + (preferences.source(for: track.id).map { [$0] } ?? LyricsSource.allCases).spoken)
-                                    .font(.caption)
-                                    .foregroundStyle(.white.opacity(0.45))
-                                    .offset(y: 24)
-                            }
-                            .frame(maxHeight: 120)
-                        Button("Find Lyrics\u{2026}") { router.findLyrics(for: track) }
-                            .buttonStyle(.borderedProminent)
-                        Button("Import .lrc File\u{2026}") { router.importLyrics(for: track) }
-                            .buttonStyle(.bordered)
+                    // Laid out in one stack (no overlay/offset), so the "Checked …" line always sits
+                    // between the title and the buttons, wrapping instead of running under them.
+                    VStack(spacing: 0) {
+                        VStack(spacing: 10) {
+                            Image(systemName: "quote.bubble").font(.largeTitle)
+                            Text("No lyrics found").font(.headline)
+                        }
+                        .foregroundStyle(.white.opacity(0.6))
+                        Text("Checked " + (preferences.source(for: track.id).map { [$0] } ?? LyricsSource.allCases).spoken)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.45))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 8)
+                            .padding(.horizontal, 32)
+                        VStack(spacing: 12) {
+                            Button("Find Lyrics\u{2026}") { router.findLyrics(for: track) }
+                                .buttonStyle(.borderedProminent)
+                            Button("Import .lrc File\u{2026}") { router.importLyrics(for: track) }
+                                .buttonStyle(.bordered)
+                        }
+                        .padding(.top, 24)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case nil:
