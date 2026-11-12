@@ -35,6 +35,11 @@ struct LibraryView: View {
     @State private var selection = Set<String>()
     @State private var pendingDelete: [Track]?
     @State private var confirmMerge = false
+    /// The view whose content is on screen. It follows `scope` a moment later, once the segmented
+    /// control has slid: each view carries its own copy of the control, so swapping the content
+    /// straight away replaced the control mid-slide and it jumped to the end.
+    @State private var shownScope: Scope?
+    private var visibleScope: Scope { shownScope ?? scope }
 
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
@@ -54,7 +59,14 @@ struct LibraryView: View {
                     selection.removeAll()
                     selecting = false
                 }
-                .onChange(of: scope) { _, _ in selection.removeAll() }
+                .onChange(of: scope) { _, newScope in
+                    selection.removeAll()
+                    Task {
+                        try? await Task.sleep(nanoseconds: 280_000_000)
+                        // A quicker second tap wins.
+                        if scope == newScope { shownScope = newScope }
+                    }
+                }
                 .confirmationDialog("Merge into which album?", isPresented: $confirmMerge, titleVisibility: .visible) {
                     let chosen = selectedAlbums
                     ForEach(Array(chosen.prefix(8))) { album in
@@ -84,7 +96,7 @@ struct LibraryView: View {
                 }
             }
         } else {
-            switch scope {
+            switch visibleScope {
             case .albums: albumsGrid
             case .songs: songsList
             case .artists: artistsList
@@ -429,7 +441,7 @@ struct LibraryView: View {
     }
 
     private var selectedTracks: [Track] {
-        switch scope {
+        switch visibleScope {
         case .albums:
             return filteredItems.filter { selection.contains($0.id) }.flatMap(\.tracks)
         case .songs:
@@ -440,7 +452,7 @@ struct LibraryView: View {
     }
 
     private var selectedAlbums: [Album] {
-        guard scope == .albums else { return [] }
+        guard visibleScope == .albums else { return [] }
         return filteredItems.compactMap { item -> Album? in
             guard selection.contains(item.id), case let .album(album) = item else { return nil }
             return album
@@ -466,7 +478,7 @@ struct LibraryView: View {
             Spacer()
             Button { router.addToPlaylist(tracks); endSelection() } label: { Label("Add to Playlist", systemImage: "text.badge.plus") }
             Spacer()
-            if scope == .albums {
+            if visibleScope == .albums {
                 let albums = selectedAlbums, singles = selectedSingles
                 // Two ways to merge: Merge Albums only groups them in the app (undoable, files
                 // untouched); Retag into Album writes the chosen album's tags into the files.
@@ -502,7 +514,7 @@ struct LibraryView: View {
     }
 
     private func toggleFavorites() {
-        switch scope {
+        switch visibleScope {
         case .albums:
             let items = filteredItems.filter { selection.contains($0.id) }
             let allFavorite = items.allSatisfy { favorites.isFavorite($0) }
@@ -526,7 +538,7 @@ struct LibraryView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            if scope == .albums || scope == .songs {
+            if visibleScope == .albums || visibleScope == .songs {
                 Button(selecting ? "Done" : "Select") {
                     if selecting { endSelection() } else { selecting = true }
                 }

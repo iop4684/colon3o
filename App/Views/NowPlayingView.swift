@@ -13,6 +13,8 @@ struct NowPlayingView: View {
     @EnvironmentObject private var favorites: FavoritesStore
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var router: AppRouter
+    /// For the Add to Playlist button's check (the song is in a playlist already).
+    @EnvironmentObject private var playlists: PlaylistStore
     @State private var mode: Mode = .artwork
     @State private var showEqualizer = false
     /// The song whose lyrics timing is being adjusted (the small sheet over the lyrics).
@@ -170,6 +172,16 @@ struct NowPlayingView: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .sensoryFeedback(.success, trigger: favorites.isFavorite(track))
+            let inPlaylist = playlists.playlists.contains { $0.trackIDs.contains(track.id) }
+            Button {
+                router.addToPlaylist([track])
+            } label: {
+                Image(systemName: inPlaylist ? "text.badge.checkmark" : "text.badge.plus")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .accessibilityLabel(inPlaylist ? "Add to Playlist (in a playlist already)" : "Add to Playlist")
             moreMenu(track)
         }
         .padding(.bottom, compact ? 12 : 0)
