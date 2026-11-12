@@ -203,6 +203,7 @@ struct LibraryView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 scopePicker
+                if query.isEmpty, !selecting, !favoritesOnly { recentlyPlayedShelf }
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                     ForEach(sections) { section in
                         SwiftUI.Section {
@@ -218,6 +219,36 @@ struct LibraryView: View {
             .overlay(alignment: .trailing) {
                 if sort.isAlphabetical, letters.count > 1, query.isEmpty { indexBar(letters, proxy: proxy) }
             }
+        }
+    }
+
+    /// The albums and songs played last, in a sideways shelf above the albums; the header opens
+    /// all of them. Hidden until something has been played.
+    @ViewBuilder
+    private var recentlyPlayedShelf: some View {
+        let items = stats.recentlyPlayed(limit: 20, in: library)
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                NavigationLink {
+                    RecentlyPlayedGrid()
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Recently Played").font(.title3.weight(.bold))
+                        Image(systemName: "chevron.right")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 20)
+                CardShelf {
+                    ForEach(items) { item in
+                        PlayedCard(item: item, inShelf: true)
+                    }
+                }
+            }
+            .padding(.top, 4)
+            .padding(.bottom, 16)
         }
     }
 
