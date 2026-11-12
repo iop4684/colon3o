@@ -165,15 +165,6 @@ struct NowPlayingView: View {
                 .contentShape(Rectangle())
             }
             Spacer(minLength: 8)
-            Button {
-                favorites.toggle(track)
-            } label: {
-                Image(systemName: favorites.isFavorite(track) ? "star.fill" : "star")
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .sensoryFeedback(.success, trigger: favorites.isFavorite(track))
             let inPlaylist = playlists.playlists.contains { $0.trackIDs.contains(track.id) }
             Button {
                 router.addToPlaylist([track])
@@ -212,11 +203,12 @@ struct NowPlayingView: View {
             trackID: track.id,
             artworkID: target.id,
             hasCustomArtwork: library.hasCustomArtwork(target),
+            isFavorite: favorites.isFavorite(track),
             lyricsFile: lyricsFile,
             source: LyricsPreferences.shared.source(for: track.id),
             actions: PlayerMoreMenu.Actions(
                 equalizer: { showEqualizer = true },
-                addToPlaylist: { router.addToPlaylist([track]) },
+                toggleFavorite: { favorites.toggle(track) },
                 findLyrics: {
                     mode = .lyrics
                     router.findLyrics(for: track)
@@ -806,7 +798,7 @@ struct PlayerMoreMenu: View, Equatable {
 
     struct Actions {
         let equalizer: () -> Void
-        let addToPlaylist: () -> Void
+        let toggleFavorite: () -> Void
         let findLyrics: () -> Void
         let findCover: () -> Void
         let searchAgain: () -> Void
@@ -823,6 +815,7 @@ struct PlayerMoreMenu: View, Equatable {
     let trackID: String
     let artworkID: String
     let hasCustomArtwork: Bool
+    let isFavorite: Bool
     let lyricsFile: LyricsFile
     let source: LyricsSource?
     let actions: Actions
@@ -835,6 +828,7 @@ struct PlayerMoreMenu: View, Equatable {
 
     static func == (a: Self, b: Self) -> Bool {
         a.trackID == b.trackID && a.artworkID == b.artworkID && a.hasCustomArtwork == b.hasCustomArtwork
+            && a.isFavorite == b.isFavorite
             && a.lyricsFile == b.lyricsFile && a.source == b.source
     }
 
@@ -855,7 +849,7 @@ struct PlayerMoreMenu: View, Equatable {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     row("Equalizer", "slider.vertical.3", then: actions.equalizer)
-                    row("Add to Playlist…", "text.badge.plus", then: actions.addToPlaylist)
+                    row(isFavorite ? "Remove from Favorites" : "Favorite", isFavorite ? "star.slash" : "star", then: actions.toggleFavorite)
                     divider
                     row("Search Lyrics Again", "quote.bubble", then: actions.searchAgain)
                     row("Find Lyrics…", "magnifyingglass", then: actions.findLyrics)
