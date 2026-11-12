@@ -35,17 +35,21 @@ struct LibraryView: View {
     @State private var selection = Set<String>()
     @State private var pendingDelete: [Track]?
     @State private var confirmMerge = false
-    /// The view whose content is on screen. It follows `scope` a moment later, once the segmented
-    /// control has slid: each view carries its own copy of the control, so swapping the content
-    /// straight away replaced the control mid-slide and it jumped to the end.
-    @State private var shownScope: Scope?
-    private var visibleScope: Scope { shownScope ?? scope }
 
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
         NavigationStack(path: $router.libraryPath) {
             content
+                // One switcher above all four views, rather than a copy inside each view's scroll
+                // view: a copy was replaced along with its view, cutting its slide short. This one
+                // stays, so it slides fully while the new view shows at once.
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    scopePicker
+                        .padding(.top, 4)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                }
                 .navigationTitle("Library")
                 .searchable(text: $query, prompt: "Search your library")
                 .toolbar { toolbar }
@@ -59,14 +63,7 @@ struct LibraryView: View {
                     selection.removeAll()
                     selecting = false
                 }
-                .onChange(of: scope) { _, newScope in
-                    selection.removeAll()
-                    Task {
-                        try? await Task.sleep(nanoseconds: 280_000_000)
-                        // A quicker second tap wins.
-                        if scope == newScope { shownScope = newScope }
-                    }
-                }
+                .onChange(of: scope) { _, _ in selection.removeAll() }
                 .confirmationDialog("Merge into which album?", isPresented: $confirmMerge, titleVisibility: .visible) {
                     let chosen = selectedAlbums
                     ForEach(Array(chosen.prefix(8))) { album in
@@ -85,7 +82,6 @@ struct LibraryView: View {
     private var content: some View {
         if library.tracks.isEmpty {
             ScrollView {
-                scopePicker
                 EmptyStateView(title: library.isScanning ? "Loading Library…" : "No Music Yet",
                                message: "Download from Search, tap + to import files, or copy music into colon3 › Music in the Files app.",
                                systemImage: "music.note.house")
@@ -96,7 +92,7 @@ struct LibraryView: View {
                 }
             }
         } else {
-            switch visibleScope {
+            switch scope {
             case .albums: albumsGrid
             case .songs: songsList
             case .artists: artistsList
@@ -214,7 +210,6 @@ struct LibraryView: View {
         let letters = sections.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {
-                scopePicker
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                     ForEach(sections) { section in
                         SwiftUI.Section {
@@ -310,7 +305,6 @@ struct LibraryView: View {
         let letters = sections.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {
-                scopePicker
                 HStack(spacing: 12) {
                     Button { player.play(ordered) } label: {
                         Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
@@ -387,7 +381,6 @@ struct LibraryView: View {
         let letters = grouped.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {
-                scopePicker
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(grouped) { section in
                         if !section.letter.isEmpty {
@@ -429,7 +422,6 @@ struct LibraryView: View {
 
     private var playlistsList: some View {
         ScrollView {
-            scopePicker
             PlaylistsListContent(query: query)
         }
     }
@@ -441,7 +433,7 @@ struct LibraryView: View {
     }
 
     private var selectedTracks: [Track] {
-        switch visibleScope {
+        switch scope {
         case .albums:
             return filteredItems.filter { selection.contains($0.id) }.flatMap(\.tracks)
         case .songs:
@@ -452,7 +444,7 @@ struct LibraryView: View {
     }
 
     private var selectedAlbums: [Album] {
-        guard visibleScope == .albums else { return [] }
+        guard scope == .albums else { return [] }
         return filteredItems.compactMap { item -> Album? in
             guard selection.contains(item.id), case let .album(album) = item else { return nil }
             return album
@@ -478,7 +470,7 @@ struct LibraryView: View {
             Spacer()
             Button { router.addToPlaylist(tracks); endSelection() } label: { Label("Add to Playlist", systemImage: "text.badge.plus") }
             Spacer()
-            if visibleScope == .albums {
+            if scope == .albums {
                 let albums = selectedAlbums, singles = selectedSingles
                 // Two ways to merge: Merge Albums only groups them in the app (undoable, files
                 // untouched); Retag into Album writes the chosen album's tags into the files.
@@ -514,7 +506,7 @@ struct LibraryView: View {
     }
 
     private func toggleFavorites() {
-        switch visibleScope {
+        switch scope {
         case .albums:
             let items = filteredItems.filter { selection.contains($0.id) }
             let allFavorite = items.allSatisfy { favorites.isFavorite($0) }
@@ -538,7 +530,7 @@ struct LibraryView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            if visibleScope == .albums || visibleScope == .songs {
+            if scope == .albums || scope == .songs {
                 Button(selecting ? "Done" : "Select") {
                     if selecting { endSelection() } else { selecting = true }
                 }
