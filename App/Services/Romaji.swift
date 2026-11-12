@@ -25,7 +25,9 @@ enum Romaji {
         let words = written.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !words.isEmpty else { return nil }
         if let found = pieces(text), found.count == words.count {
-            return zip(found, words).map { Piece(text: $1, location: $0.location, length: $0.length) }
+            return zip(found, words).map {
+                Piece(text: agreeingOnParticle(written: $1, found: $0.text), location: $0.location, length: $0.length)
+            }
         }
         let total = (text as NSString).length
         let weights = words.map { Double(max($0.count, 1)) }
@@ -37,6 +39,17 @@ enum Romaji {
             let end = Int((done / sum * Double(total)).rounded())
             return Piece(text: word, location: start, length: max(end - start, 1))
         }
+    }
+
+    /// A person's romaji often writes a particle as it's spelled ("ha", "he") where it's spoken
+    /// "wa"/"e". When the words line up and this app's own reading of that word is the spoken form
+    /// (particle detected from the Japanese), the spoken form is used.
+    private static func agreeingOnParticle(written: String, found: String) -> String {
+        let lower = written.lowercased()
+        if (lower == "ha" && found == "wa") || (lower == "he" && found == "e") { return found }
+        // では/には…: the same word with a different last syllable.
+        if lower.hasSuffix("ha"), found.hasSuffix("wa"), lower.dropLast(2) == found.dropLast(2) { return found }
+        return written
     }
 
     /// The line's romaji, word by word, each tied to the characters it reads, so it can be lit in
@@ -59,14 +72,16 @@ enum Romaji {
         guard let tokenizer = sharedTokenizer else { return nil }
 
         // Each word's reading in hiragana, and whether it stands on its own in romaji.
-        var words: [(kana: String, attaches: Bool, range: CFRange)] = []
+        var words: [(kana: String, attaches: Bool, range: CFRange, token: String)] = []
         var previousToken: String?
         while !CFStringTokenizerAdvanceToNextToken(tokenizer).isEmpty {
             let tokenRange = CFStringTokenizerGetCurrentTokenRange(tokenizer)
             let token = (CFStringCreateWithSubstring(nil, string, tokenRange) as String?) ?? ""
             guard !token.isEmpty else { continue }
             let latin = CFStringTokenizerCopyCurrentTokenAttribute(tokenizer, kCFStringTokenizerAttributeLatinTranscription) as? String
-            let kana = reading(of: token, latin: latin)
+            var kana = reading(of: token, latin: latin)
+            // では, には, とは, こんにちは… come back as one word; the は in them is spoken "wa" too.
+            if particleCompounds.contains(token), kana.hasSuffix("は") { kana = String(kana.dropLast()) + "わ" }
             // Endings written in hiragana (て, てる, ます…) belong to the word before them, as in
             // Apple Music's "kidzuiteru"; particles and interjections stand on their own. So does
             // anything after a word ending in っ (言っ + て → itte).
@@ -84,8 +99,12 @@ enum Romaji {
             } else {
                 attaches = !previousStandsAlone && (previousEndsInSokuon || (isHiragana(token) && !standalone.contains(token)))
             }
-            words.append((readings[token] ?? kana, attaches, tokenRange))
+            words.append((readings[token] ?? kana, attaches, tokenRange, token))
             previousToken = token
+        }
+        // 何 is "nan" before だ, で, て, の and と (何だ, 何で, 何の), "nani" elsewhere.
+        for index in words.indices where words[index].token == "何" && index + 1 < words.count {
+            if let next = words[index + 1].token.first, "だでてのと".contains(next) { words[index].kana = "なん" }
         }
 
         var groups: [(kana: String, start: Int, end: Int)] = []
@@ -166,13 +185,21 @@ enum Romaji {
     /// Kana words that start a new word but can take endings themselves (だっ + た → datta).
     private static let startsWord: Set<String> = ["だっ", "じゃ", "です", "でし"]
 
+    /// Particle and greeting words that include a は spoken "wa". The tokenizer often returns these
+    /// as a single word, so the は never stood alone to be read as a particle ("deha", "konnichiha").
+    private static let particleCompounds: Set<String> = [
+        "では", "には", "とは", "へは", "からは", "までは", "よりは", "ては", "こんにちは", "こんばんは",
+    ]
+
     /// Particles read differently from how they're written.
     private static let particles = ["は": "wa", "へ": "e", "を": "wo"]
 
     /// Hiragana words that stand apart in romaji rather than joining the word before them.
     private static let standalone: Set<String> = ["は", "が", "を", "に", "で", "と", "の", "へ", "も", "や", "か",
                                                   "ね", "よ", "な", "わ", "ぞ", "さ", "から", "まで", "より", "けど", "こと", "もの", "とき", "ため", "よう",
-                                                  "ほら", "あの", "その", "この", "あまり"]
+                                                  "ほら", "あの", "その", "この", "あまり",
+                                                  "では", "には", "とは", "へは", "からは", "までは", "よりは",
+                                                  "こんにちは", "こんばんは"]
 
     // MARK: Spelling
 
