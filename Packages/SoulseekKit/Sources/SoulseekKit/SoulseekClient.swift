@@ -118,6 +118,12 @@ public final class SoulseekClient: @unchecked Sendable {
 
     private var peers: [String: PeerLink] = [:]
     private var addressWaiters: [String: [(PeerAddress?) -> Void]] = [:]
+    /// Which GetPeerAddress question each waiting user's timeout belongs to.
+    private var addressQuestions: [String: UInt64] = [:]
+    private var addressQuestion: UInt64 = 0
+    /// Logged once: connections reach us with the VPN's address instead of the peer's.
+    private var loggedHiddenAddresses = false
+    private var hiddenAddressCounter: UInt64 = 0
     private var fileLinks: [ObjectIdentifier: FileLink] = [:]
 
     private var downloads: [DownloadID: DownloadRecord] = [:]
@@ -404,6 +410,7 @@ public final class SoulseekClient: @unchecked Sendable {
         for link in Array(fileLinks.values) { closeFile(link, reason: "Disconnected") }
         for waiters in addressWaiters.values { waiters.forEach { $0(nil) } }
         addressWaiters.removeAll()
+        addressQuestions.removeAll()
 
         for (id, record) in downloads {
             switch record.state {
@@ -466,6 +473,7 @@ public final class SoulseekClient: @unchecked Sendable {
             if lastKnownIPs.count > 2000 { lastKnownIPs.removeAll() }
             lastKnownIPs[username] = ip
             let waiters = addressWaiters.removeValue(forKey: username) ?? []
+            addressQuestions[username] = nil
             // 0.0.0.0 means offline. Port 0 means they have no port we can reach, but they can
             // still connect to us (indirect connection).
             let address: PeerAddress? = ip == "0.0.0.0" ? nil : PeerAddress(ip: ip, port: port)
@@ -522,8 +530,16 @@ public final class SoulseekClient: @unchecked Sendable {
         addressWaiters[username, default: []].append(completion)
         guard isFirst else { return }
         sendServer(.getPeerAddress(username: username))
+        // The timeout belongs to this question only. It used to give up on whatever question
+        // about this user was waiting 15 s later, even one asked a moment before, which made
+        // that connection (and the download behind it) fail for no reason.
+        addressQuestion &+= 1
+        let question = addressQuestion
+        addressQuestions[username] = question
         queue.asyncAfter(deadline: .now() + 15) { [weak self] in
-            guard let self, let waiters = self.addressWaiters.removeValue(forKey: username) else { return }
+            guard let self, self.addressQuestions[username] == question else { return }
+            self.addressQuestions[username] = nil
+            guard let waiters = self.addressWaiters.removeValue(forKey: username) else { return }
             waiters.forEach { $0(nil) }
         }
     }
@@ -978,7 +994,7 @@ public final class SoulseekClient: @unchecked Sendable {
             }
             // A file connection someone opened to us directly: only from where the server says
             // that user is (anyone can claim a username).
-            if let address = link.address, lastKnownIPs[link.username] != address {
+            if let address = link.address, !address.hasPrefix("hidden-"), lastKnownIPs[link.username] != address {
                 guard !link.checkingAddress else { return }
                 link.checkingAddress = true
                 resolveAddress(link.username) { [weak self, weak link] _ in
@@ -1498,10 +1514,11 @@ public final class SoulseekClient: @unchecked Sendable {
         return "Can't listen on port \(listenPort): \(error.localizedDescription)"
     }
 
-    /// At most once a second, so a burst of connections doesn't flood the app with updates.
+    /// At most once every few seconds: each update redraws the screens watching the client, and
+    /// one search brings hundreds of connections.
     private func emitListenerStatus() {
         guard listenerReady else { return }
-        let wait = 1 - Date().timeIntervalSince(lastListenerEmit)
+        let wait = 5 - Date().timeIntervalSince(lastListenerEmit)
         if wait <= 0 {
             lastListenerEmit = Date()
             emit(.listener(.listening(port: listenPort, accepted: acceptedConnections)))
@@ -1518,7 +1535,18 @@ public final class SoulseekClient: @unchecked Sendable {
     /// A new connection to our port. It gets a few seconds to say who it is (PeerInit or
     /// PierceFireWall) and only a small first message; too many at once are turned away.
     private func acceptIncoming(_ connection: NWConnection) {
-        let address = Self.remoteAddress(of: connection)
+        var address = Self.remoteAddress(of: connection)
+        // Through a VPN or router that rewrites the sender, every peer arrives from the same
+        // private address. Per-address limits and "is this user at this address" checks would
+        // then turn most of them away, so such connections each count as their own address.
+        if Self.isPrivateAddress(address) {
+            if !loggedHiddenAddresses {
+                loggedHiddenAddresses = true
+                log("Peers connect from \(address) (a private address): the VPN or router hides their real ones, so those can't be checked")
+            }
+            hiddenAddressCounter &+= 1
+            address = "hidden-\(hiddenAddressCounter)"
+        }
         guard pendingLimiter.admit(address) else {
             connection.cancel()
             return
@@ -1649,6 +1677,9 @@ public final class SoulseekClient: @unchecked Sendable {
         link.frames = FrameBuffer(limit: Incoming.peerFrameLimit)
         if let trusted {
             link.trusted = trusted
+        } else if address.hasPrefix("hidden-") {
+            // Their real address is unknown, so it can't be compared with the server's.
+            link.trusted = true
         } else if let confirmed = verifiedPeers[username + "|" + address], Date().timeIntervalSince(confirmed) < Incoming.verifiedFor {
             link.trusted = true
         } else {
@@ -1657,7 +1688,7 @@ public final class SoulseekClient: @unchecked Sendable {
         link.isReady = true
         link.lastActivity = Date()
         incomingLinks[ObjectIdentifier(link)] = link
-        if link.trusted, peers[username] == nil { peers[username] = link }
+        if link.trusted, !address.hasPrefix("hidden-"), peers[username] == nil { peers[username] = link }
         connection.stateUpdateHandler = { [weak self, weak link] state in
             guard let self, let link else { return }
             if case .failed = state { self.closePeer(link, failed: false) }
@@ -1793,13 +1824,21 @@ public final class SoulseekClient: @unchecked Sendable {
             return
         }
         link.verifying = true
-        resolveAddress(link.username) { [weak self, weak link] _ in
+        let knownBefore = lastKnownIPs[link.username]
+        resolveAddress(link.username) { [weak self, weak link] answer in
             guard let self, let link, !link.isClosed else { return }
             link.verifying = false
             let held = link.held
             link.held.removeAll()
             // Compare the IP alone: the server reports port 0 for some reachable peers.
             guard self.lastKnownIPs[link.username] == address else {
+                // No answer from the server (and nothing known from before) isn't a mismatch:
+                // close, but let them try again instead of shutting them out for ten minutes.
+                if answer == nil, knownBefore == nil, self.lastKnownIPs[link.username] == nil {
+                    self.log("Couldn't check where \(link.username) is; closed their connection")
+                    self.closePeer(link, failed: false)
+                    return
+                }
                 self.log("Closed a connection from someone claiming to be \(link.username) (\(address))")
                 if self.rejectedPeers.count > 500 { self.rejectedPeers.removeAll() }
                 self.rejectedPeers[key] = Date()
@@ -1843,6 +1882,17 @@ public final class SoulseekClient: @unchecked Sendable {
     private static func isPlausibleUsername(_ name: String) -> Bool {
         !name.isEmpty && name.utf8.count <= 200
             && !name.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }
+    }
+
+    /// LAN, carrier NAT, loopback and link-local IPv4 ranges: never a peer's real internet address.
+    static func isPrivateAddress(_ address: String) -> Bool {
+        let parts = address.split(separator: ".").compactMap { UInt8($0) }
+        guard parts.count == 4 else { return false }
+        switch (parts[0], parts[1]) {
+        case (10, _), (127, _), (192, 168), (169, 254): return true
+        case (172, 16...31), (100, 64...127): return true
+        default: return false
+        }
     }
 
     private static func remoteAddress(of connection: NWConnection) -> String {

@@ -212,7 +212,7 @@ struct AlbumDetailView: View {
     }
 
     /// Song rows (yours, or the missing ones), each followed by a divider.
-    private func rows(_ rows: [Row], album: Album) -> some View {
+    private func rows(_ rows: [Row], album: Album, shortTitles: [String: String] = [:]) -> some View {
         ForEach(rows) { row in
             switch row {
             case let .track(track, number):
@@ -229,7 +229,7 @@ struct AlbumDetailView: View {
                     TrackMenuItems(tracks: [track]) { pendingDelete = $0 }
                 }
             case let .missing(entry):
-                MissingTrackRow(track: entry, album: album) { findingTrack = entry }
+                MissingTrackRow(track: entry, album: album, displayTitle: shortTitles[entry.title]) { findingTrack = entry }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 10)
             }
@@ -242,6 +242,8 @@ struct AlbumDetailView: View {
     private func missingSection(_ album: Album, showDiscs: Bool) -> some View {
         let entries = missing.sorted { ($0.disc, $0.number ?? 10_000) < ($1.disc, $1.number ?? 10_000) }
         if !entries.isEmpty {
+            // Titles taken from file names often all start with the artist and album.
+            let short = Formatting.withoutSharedStart(entries.map(\.title))
             HStack(alignment: .firstTextBaseline) {
                 Text("Missing Songs").font(.title3.weight(.bold))
                 Text("\(entries.count)").font(.subheadline).foregroundStyle(.secondary)
@@ -258,7 +260,7 @@ struct AlbumDetailView: View {
                         .padding(.top, 10)
                         .padding(.bottom, 2)
                 }
-                rows(entries.filter { $0.disc == disc }.map(Row.missing), album: album)
+                rows(entries.filter { $0.disc == disc }.map(Row.missing), album: album, shortTitles: short)
             }
         }
     }
@@ -487,6 +489,8 @@ struct ArtistDetailView: View {
 struct MissingTrackRow: View {
     let track: MissingTrack
     let album: Album
+    /// The title without what all the missing titles share.
+    var displayTitle: String?
     let onFind: () -> Void
 
     @EnvironmentObject private var soulseek: SoulseekModel
@@ -497,7 +501,7 @@ struct MissingTrackRow: View {
                 .font(.body.monospacedDigit())
                 .frame(minWidth: 24, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(track.title).lineLimit(1)
+                Text(displayTitle ?? track.title).lineLimit(2)
                 Text("Not in your library").font(.caption)
             }
             Spacer(minLength: 8)

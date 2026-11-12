@@ -50,6 +50,31 @@ enum Formatting {
         return formatter
     }()
 
+    /// Names in a list without the long beginning they all share ("Artist Album (Deluxe) 03 Song"
+    /// becomes "03 Song"), so rows cut off at the end can still be told apart. Keyed by the full
+    /// name; empty when there's nothing worth removing.
+    static func withoutSharedStart(_ names: [String]) -> [String: String] {
+        let unique = Array(Set(names))
+        guard unique.count >= 2, var prefix = unique.first else { return [:] }
+        for name in unique.dropFirst() { prefix = name.commonPrefix(with: prefix) }
+        // Back to the end of a word, so a title isn't cut in the middle of one.
+        let breaks = CharacterSet(charactersIn: " -_.()[]")
+        guard let cut = prefix.unicodeScalars.lastIndex(where: { breaks.contains($0) }) else { return [:] }
+        prefix = String(prefix.unicodeScalars[...cut])
+        guard prefix.count >= 8 else { return [:] }
+        let leading = CharacterSet(charactersIn: " -_.)]")
+        var short: [String: String] = [:]
+        for name in unique {
+            guard name.hasPrefix(prefix) else { return [:] }
+            let rest = String(name.dropFirst(prefix.count))
+            let trimmed = String(rest.unicodeScalars.drop(while: { leading.contains($0) }))
+            // Something has to be left of every name (more than a file extension).
+            guard (trimmed as NSString).deletingPathExtension.count >= 2 else { return [:] }
+            short[name] = trimmed
+        }
+        return short
+    }
+
     static func bytes(_ count: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: count), countStyle: .file)
     }

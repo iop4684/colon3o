@@ -202,6 +202,8 @@ struct FolderDetailView: View {
 
     var body: some View {
         if let folder = soulseek.folder(withID: folderID) {
+            // File names without the artist and album every one of them starts with.
+            let short = Formatting.withoutSharedStart((folder.files + others).map(\.filename))
             List {
                 Section {
                     HStack(spacing: 16) {
@@ -233,13 +235,14 @@ struct FolderDetailView: View {
 
                 Section {
                     ForEach(folder.files, id: \.path) { file in
-                        FileRow(file: file, username: folder.username, folderImages: folder.images)
+                        FileRow(file: file, username: folder.username, folderImages: folder.images,
+                                displayName: short[file.filename])
                     }
                 } header: {
                     if soulseek.folderListings[folderID] != nil { Text("Matching Your Search") }
                 }
 
-                otherFiles(folder)
+                otherFiles(folder, short: short)
             }
             .navigationTitle(folder.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -254,7 +257,7 @@ struct FolderDetailView: View {
 
     /// The rest of the folder: a button to fetch it, then its songs.
     @ViewBuilder
-    private func otherFiles(_ folder: FolderResult) -> some View {
+    private func otherFiles(_ folder: FolderResult, short: [String: String]) -> some View {
         switch soulseek.folderListings[folderID] {
         case nil:
             Section {
@@ -290,7 +293,8 @@ struct FolderDetailView: View {
                     Text("Nothing else in this folder.").foregroundStyle(.secondary)
                 }
                 ForEach(others, id: \.path) { file in
-                    FileRow(file: file, username: folder.username, folderImages: folder.images)
+                    FileRow(file: file, username: folder.username, folderImages: folder.images,
+                            displayName: short[file.filename])
                 }
             } header: {
                 Text("Other Songs in Folder")
@@ -303,12 +307,14 @@ struct FileRow: View {
     let file: SharedFile
     let username: String
     let folderImages: [SharedFile]
+    /// The file's name without what the whole folder's names share.
+    var displayName: String?
     @EnvironmentObject private var soulseek: SoulseekModel
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(file.filename)
+                Text(displayName ?? file.filename)
                     .lineLimit(2)
                 Text(details)
                     .font(.caption)
