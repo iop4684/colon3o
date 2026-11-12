@@ -327,7 +327,16 @@ struct PlayerBackground: View {
     /// player stutter; a pre-blurred picture costs nothing to draw.
     @State private var blurred: UIImage?
 
+    /// The height of the status bar / Dynamic Island area. Pulled down, the sheet's top edge should
+    /// be just where the finger has taken it, so the picture reaches up into that area as well
+    /// (instead of starting below it and leaving a gap above the sheet the moment it moves).
+    private static var topInset: CGFloat {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.top ?? 0
+    }
+
     var body: some View {
+        let extra = Self.topInset
         GeometryReader { geometry in
             ZStack {
                 Color(white: 0.18)
@@ -335,15 +344,17 @@ struct PlayerBackground: View {
                     Image(uiImage: blurred)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .frame(width: geometry.size.width, height: geometry.size.height + extra)
                         .clipped()
                         .transition(.opacity)
                 }
                 // Darker than before, like Apple Music, so dimmed and lit lyrics stand apart.
                 LinearGradient(colors: [.black.opacity(0.5), .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height + extra)
             .clipShape(.rect(cornerRadius: cornerRadius))
             .drawingGroup()
+            .offset(y: -extra)
         }
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 0.6), value: blurred)
