@@ -24,10 +24,13 @@ struct ParametricEQEditor: View {
 
             preampRow
 
-            ForEach($equalizer.peqBands) { $band in
-                let number = (equalizer.peqBands.firstIndex { $0.id == band.id } ?? 0) + 1
-                PEQBandCard(band: $band, number: number) {
-                    equalizer.peqBands.removeAll { $0.id == band.id }
+            // Bound by id, not with ForEach($equalizer.peqBands): those bindings reach the band by its
+            // index, and a card still on screen just after its band was deleted read past the end
+            // of the array and crashed (Add Band, then delete it).
+            ForEach(Array(equalizer.peqBands.enumerated()), id: \.element.id) { index, band in
+                PEQBandCard(band: binding(for: band), number: index + 1) {
+                    let id = band.id
+                    equalizer.peqBands.removeAll { $0.id == id }
                 }
             }
             .disabled(!equalizer.isEnabled)
@@ -78,6 +81,18 @@ struct ParametricEQEditor: View {
         .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK", role: .cancel) {}
         }
+    }
+
+    /// A band's binding that finds it by id each time, and does nothing once it's gone.
+    private func binding(for band: PEQBand) -> Binding<PEQBand> {
+        let id = band.id
+        return Binding(
+            get: { equalizer.peqBands.first { $0.id == id } ?? band },
+            set: { newValue in
+                guard let index = equalizer.peqBands.firstIndex(where: { $0.id == id }) else { return }
+                equalizer.peqBands[index] = newValue
+            }
+        )
     }
 
     private var preampRow: some View {
