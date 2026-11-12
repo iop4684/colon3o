@@ -67,7 +67,7 @@ struct NowPlayingView: View {
         }
         .padding(.horizontal, 28)
         .foregroundStyle(.white)
-        .background { PlayerBackground(image: plainBackground ? nil : player.artwork, cornerRadius: dragOffset > 0 ? 44 : 0) }
+        .background { PlayerBackground(image: plainBackground ? nil : player.artwork, cornerRadius: min(dragOffset / 24, 1) * 44) }
         .overlay(alignment: .topLeading) {
             if showMeter { FrameMeterBadge().padding(.leading, 16).padding(.top, 2) }
         }
@@ -103,13 +103,15 @@ struct NowPlayingView: View {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
                 guard value.translation.height > abs(value.translation.width) || dragOffset > 0 else { return }
-                dragOffset = max(value.translation.height, 0)
+                // Counted from where the drag actually started (after the 12 pt threshold), so the
+                // sheet follows the finger from zero instead of jumping down first.
+                dragOffset = max(value.translation.height - 12, 0)
             }
             .onEnded { value in
                 if dragOffset > 140 || (dragOffset > 0 && value.predictedEndTranslation.height > 320) {
                     router.showPlayer = false
                 } else {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { dragOffset = 0 }
+                    withAnimation(.interpolatingSpring(stiffness: 220, damping: 26)) { dragOffset = 0 }
                 }
             }
     }
