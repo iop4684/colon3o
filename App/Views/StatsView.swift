@@ -116,6 +116,7 @@ struct StatsView: View {
                 switch key {
                 case "favorites": return ("Favorite Songs", stat)
                 case "mostPlayed": return ("Most Played", stat)
+                case "recentlyPlayed": return ("Recently Played", stat)
                 case "fewPlaylists": return ("Songs in Few Playlists", stat)
                 default:
                     guard let id = UUID(uuidString: key), let playlist = playlists.playlist(id: id) else { return nil }

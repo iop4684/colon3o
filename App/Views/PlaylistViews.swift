@@ -5,6 +5,8 @@ enum PlaylistRoute: Hashable {
     case user(UUID)
     case favorites
     case mostPlayed
+    /// Songs by their last play, the latest first.
+    case recentlyPlayed
     /// Songs in no playlist (or at most a few): a way to hear what you haven't sorted yet.
     case fewPlaylists
 
@@ -20,6 +22,7 @@ enum PlaylistRoute: Hashable {
         switch self {
         case .favorites: return "star.fill"
         case .mostPlayed: return "chart.bar.fill"
+        case .recentlyPlayed: return "clock.fill"
         case .fewPlaylists: return "tray.fill"
         case .user: return nil
         }
@@ -42,6 +45,7 @@ enum PlaylistRoute: Hashable {
         case let .user(id): return id.uuidString
         case .favorites: return "favorites"
         case .mostPlayed: return "mostPlayed"
+        case .recentlyPlayed: return "recentlyPlayed"
         case .fewPlaylists: return "fewPlaylists"
         }
     }
@@ -104,6 +108,8 @@ struct PlaylistsListContent: View {
                 row(route: .favorites, name: "Favorite Songs", tracks: favoriteTracks, symbol: "star.fill")
                 row(route: .mostPlayed, name: "Most Played", tracks: stats.mostPlayed(limit: 4, in: library),
                     symbol: "chart.bar.fill", subtitle: "Top 50 by plays")
+                row(route: .recentlyPlayed, name: "Recently Played", tracks: stats.recentSongs(limit: 4, in: library),
+                    symbol: "clock.fill", subtitle: "Last 100 songs, newest first")
                 let few = PlaylistRoute.fewPlaylistsTracks(library: library, playlists: playlists, max: maxPlaylists)
                 row(route: .fewPlaylists, name: PlaylistRoute.fewPlaylistsName(maxPlaylists), tracks: few,
                     symbol: "tray.fill", subtitle: "\(few.count) song\(few.count == 1 ? "" : "s")")
@@ -298,6 +304,7 @@ struct PlaylistDetailView: View {
         case .user: return playlist?.name ?? "Playlist"
         case .favorites: return "Favorite Songs"
         case .mostPlayed: return "Most Played"
+        case .recentlyPlayed: return "Recently Played"
         case .fewPlaylists: return PlaylistRoute.fewPlaylistsName(maxPlaylists)
         }
     }
@@ -308,6 +315,7 @@ struct PlaylistDetailView: View {
         case .favorites:
             return library.tracks.filter { favorites.isFavorite($0) }.sorted { SortKey.less($0.title, $1.title) }
         case .mostPlayed: return stats.mostPlayed(limit: 50, in: library)
+        case .recentlyPlayed: return stats.recentSongs(limit: 100, in: library)
         case .fewPlaylists: return PlaylistRoute.fewPlaylistsTracks(library: library, playlists: playlists, max: maxPlaylists)
         }
     }
@@ -439,6 +447,7 @@ struct PlaylistDetailView: View {
         case .user: return "Tap ⋯ › Add Songs, or long-press any song and choose Add to Playlist."
         case .favorites: return "Star songs to collect them here."
         case .mostPlayed: return "Songs you play show up here."
+        case .recentlyPlayed: return "Songs you play show up here, the latest first."
         case .fewPlaylists: return "Every song is in more playlists than that."
         }
     }
@@ -447,6 +456,9 @@ struct PlaylistDetailView: View {
         if case .mostPlayed = route {
             let plays = stats.plays(of: track)
             return "\(track.artist) · \(plays) play\(plays == 1 ? "" : "s")"
+        }
+        if case .recentlyPlayed = route, let date = stats.lastPlayed(track) {
+            return "\(track.artist) · \(date.formatted(.relative(presentation: .named)))"
         }
         if case .fewPlaylists = route, maxPlaylists > 0 {
             let count = playlists.playlists.filter { $0.trackIDs.contains(track.id) }.count

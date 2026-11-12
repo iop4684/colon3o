@@ -188,6 +188,16 @@ final class StatsStore: ObservableObject {
         return Array(ranked.lazy.compactMap { library.track(id: $0.key) }.prefix(limit))
     }
 
+    /// Songs you played, the latest first (each once, at its last play). Only songs still in the library.
+    func recentSongs(limit: Int, in library: LibraryStore) -> [Track] {
+        let played = stored.tracks
+            .compactMap { id, stat -> (String, Date)? in stat.lastPlayed.map { (id, $0) } }
+            .sorted { $0.1 > $1.1 }
+        return Array(played.lazy.compactMap { library.track(id: $0.0) }.prefix(limit))
+    }
+
+    func lastPlayed(_ track: Track) -> Date? { stored.tracks[track.id]?.lastPlayed }
+
     /// Albums and loose songs you played, most recent first (an album appears once, at its
     /// latest play). Only things still in the library.
     func recentlyPlayed(limit: Int, in library: LibraryStore) -> [LibraryItem] {

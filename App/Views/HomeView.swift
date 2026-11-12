@@ -183,7 +183,7 @@ private struct SongShelf: View {
 }
 
 /// Square cards two to a screen, paging sideways.
-struct CardShelf<Content: View>: View {
+private struct CardShelf<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -626,7 +626,7 @@ private struct ReleasesGrid: View {
 // MARK: - Recently played
 
 /// An album or song from your library you played lately.
-struct PlayedCard: View {
+private struct PlayedCard: View {
     let item: LibraryItem
     let inShelf: Bool
 
@@ -661,7 +661,7 @@ struct PlayedCard: View {
 }
 
 /// Everything in Recently Played.
-struct RecentlyPlayedGrid: View {
+private struct RecentlyPlayedGrid: View {
     @EnvironmentObject private var stats: StatsStore
     @EnvironmentObject private var library: LibraryStore
 
@@ -682,7 +682,7 @@ struct RecentlyPlayedGrid: View {
 // MARK: - Shared
 
 /// Two cards per screen width in a sideways shelf.
-struct ShelfWidth: ViewModifier {
+private struct ShelfWidth: ViewModifier {
     let active: Bool
 
     func body(content: Content) -> some View {
