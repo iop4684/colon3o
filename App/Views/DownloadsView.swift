@@ -352,7 +352,33 @@ struct DownloadRow: View {
         return .remote(CoverLookup.query(forFolderPath: item.folderPath))
     }
 
+    @EnvironmentObject private var router: AppRouter
+
+    /// A finished song's album (or the song itself when it has none), for tapping the row.
+    private var finishedAlbum: Album? {
+        guard case let .completed(url) = item.state, let track = library.track(at: url) else { return nil }
+        return library.album(containing: track)
+    }
+
     var body: some View {
+        if let album = finishedAlbum {
+            Button { router.showInLibrary(album) } label: {
+                HStack(spacing: 0) {
+                    row
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 8)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 12) {
             ArtworkView(source: artwork, size: 46, cornerRadius: 6)
             VStack(alignment: .leading, spacing: 4) {
