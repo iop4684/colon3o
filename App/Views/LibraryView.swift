@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LibraryView: View {
     enum Scope: String, CaseIterable, Identifiable {
@@ -28,6 +29,10 @@ struct LibraryView: View {
     @EnvironmentObject private var stats: StatsStore
 
     @AppStorage("library.scope") private var scope: Scope = .albums
+    /// Where the switcher's highlight is drawn. It trails `scope` by one update and then animates
+    /// to it: every view carries its own copy of the switcher, so a new copy appears with the
+    /// highlight on the previous view and slides it across, while the content changes at once.
+    @State private var highlightedScope: Scope?
     @AppStorage("library.sort") private var sort: Sort = .title
     @State private var favoritesOnly = false
     @State private var query = ""
@@ -41,15 +46,6 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack(path: $router.libraryPath) {
             content
-                // One switcher above all four views, rather than a copy inside each view's scroll
-                // view: a copy was replaced along with its view, cutting its slide short. This one
-                // stays, so it slides fully while the new view shows at once.
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    scopePicker
-                        .padding(.top, 4)
-                        .frame(maxWidth: .infinity)
-                        .background(.bar)
-                }
                 .navigationTitle("Library")
                 .searchable(text: $query, prompt: "Search your library")
                 .toolbar { toolbar }
@@ -63,7 +59,11 @@ struct LibraryView: View {
                     selection.removeAll()
                     selecting = false
                 }
-                .onChange(of: scope) { _, _ in selection.removeAll() }
+                .onAppear { if highlightedScope == nil { highlightedScope = scope } }
+                .onChange(of: scope) { _, newScope in
+                    selection.removeAll()
+                    withAnimation(.snappy(duration: 0.3)) { highlightedScope = newScope }
+                }
                 .confirmationDialog("Merge into which album?", isPresented: $confirmMerge, titleVisibility: .visible) {
                     let chosen = selectedAlbums
                     ForEach(Array(chosen.prefix(8))) { album in
@@ -82,6 +82,7 @@ struct LibraryView: View {
     private var content: some View {
         if library.tracks.isEmpty {
             ScrollView {
+                scopePicker
                 EmptyStateView(title: library.isScanning ? "Loading Library…" : "No Music Yet",
                                message: "Download from Search, tap + to import files, or copy music into colon3 › Music in the Files app.",
                                systemImage: "music.note.house")
@@ -92,22 +93,70 @@ struct LibraryView: View {
                 }
             }
         } else {
-            switch scope {
-            case .albums: albumsGrid
-            case .songs: songsList
-            case .artists: artistsList
-            case .playlists: playlistsList
+            Group {
+                switch scope {
+                case .albums: albumsGrid
+                case .songs: songsList
+                case .artists: artistsList
+                case .playlists: playlistsList
+                }
             }
+            // Swipe sideways to the next or previous view. UIKit swipes, recognized alongside the
+            // scroll view so vertical scrolling and the letter index keep working.
+            .gesture(SideSwipe(direction: .left) { swipe(by: 1) })
+            .gesture(SideSwipe(direction: .right) { swipe(by: -1) })
         }
     }
 
     private var scopePicker: some View {
-        Picker("View", selection: $scope) {
-            ForEach(Scope.allCases) { Text($0.rawValue).tag($0) }
+        ScopeSwitcher(selection: $scope, highlighted: highlightedScope ?? scope)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+    }
+
+    /// The next or previous view, for a sideways swipe across the content.
+    private func swipe(by step: Int) {
+        let all = Scope.allCases
+        guard !selecting, let index = all.firstIndex(of: scope) else { return }
+        let next = index + step
+        guard all.indices.contains(next) else { return }
+        scope = all[next]
+    }
+
+    /// A segmented control drawn here rather than the system one, whose highlight can't start
+    /// from a position the control never showed.
+    private struct ScopeSwitcher: View {
+        @Binding var selection: Scope
+        let highlighted: Scope
+
+        var body: some View {
+            let all = Scope.allCases
+            GeometryReader { geo in
+                let width = geo.size.width / CGFloat(all.count)
+                let index = CGFloat(all.firstIndex(of: highlighted) ?? 0)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color(.tertiarySystemFill))
+                    Capsule()
+                        .fill(Color(.systemGray3))
+                        .frame(width: width - 4, height: geo.size.height - 4)
+                        .offset(x: index * width + 2)
+                    HStack(spacing: 0) {
+                        ForEach(all) { scope in
+                            Button { selection = scope } label: {
+                                Text(scope.rawValue)
+                                    .font(.subheadline.weight(scope == highlighted ? .semibold : .regular))
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(scope == selection ? .isSelected : [])
+                        }
+                    }
+                }
+            }
+            .frame(height: 32)
+            .sensoryFeedback(.selection, trigger: selection)
         }
-        .pickerStyle(.segmented)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
     }
 
     // MARK: Filtering and sections
@@ -210,6 +259,7 @@ struct LibraryView: View {
         let letters = sections.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {
+                scopePicker
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                     ForEach(sections) { section in
                         SwiftUI.Section {
@@ -305,6 +355,7 @@ struct LibraryView: View {
         let letters = sections.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {
+                scopePicker
                 HStack(spacing: 12) {
                     Button { player.play(ordered) } label: {
                         Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
@@ -381,6 +432,7 @@ struct LibraryView: View {
         let letters = grouped.map(\.letter).filter { !$0.isEmpty }
         return ScrollViewReader { proxy in
             ScrollView {
+                scopePicker
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(grouped) { section in
                         if !section.letter.isEmpty {
@@ -422,6 +474,7 @@ struct LibraryView: View {
 
     private var playlistsList: some View {
         ScrollView {
+            scopePicker
             PlaylistsListContent(query: query)
         }
     }
@@ -592,5 +645,30 @@ struct LibraryView: View {
                 }
             }
         }
+    }
+}
+
+
+/// A one-direction UIKit swipe that fires alongside other gestures (the scroll view's pan).
+struct SideSwipe: UIGestureRecognizerRepresentable {
+    let direction: UISwipeGestureRecognizer.Direction
+    let action: () -> Void
+
+    func makeUIGestureRecognizer(context: Context) -> UISwipeGestureRecognizer {
+        let recognizer = UISwipeGestureRecognizer()
+        recognizer.direction = direction
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UISwipeGestureRecognizer, context: Context) {
+        if recognizer.state == .ended { action() }
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     }
 }
