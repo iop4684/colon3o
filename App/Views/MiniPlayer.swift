@@ -19,18 +19,22 @@ struct MiniPlayerContent: View {
             }
             .frame(width: compact ? 24 : 30, height: compact ? 24 : 30)
             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .frame(maxHeight: .infinity)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(player.current?.title ?? "Not Playing")
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
-                if !compact, let artist = player.current?.artist {
+                if !compact, let artist = player.current?.artist, !artist.isEmpty {
+                    // An explicit dimmed primary: .secondary vanished in the glass pill, leaving an
+                    // empty line that pushed the title above centre.
                     Text(artist)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.6))
                         .lineLimit(1)
                 }
             }
+            .frame(maxHeight: .infinity)  // Title (and artist) centred in the pill's height.
             Spacer(minLength: 4)
 
             Button {

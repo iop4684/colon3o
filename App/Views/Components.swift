@@ -432,7 +432,12 @@ struct ActionPopover<Label: View>: View {
                             // Let the bubble close first; the choice may close the player or switch tabs.
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { item.action() }
                         } label: {
-                            SwiftUI.Label(item.title, systemImage: item.systemImage)
+                            // Icons centred in one fixed-width column, so every title starts at the same x.
+                            SwiftUI.Label {
+                                Text(item.title)
+                            } icon: {
+                                Image(systemName: item.systemImage).frame(width: 26)
+                            }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 12)
