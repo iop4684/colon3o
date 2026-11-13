@@ -70,7 +70,7 @@ enum MiniPlayerZoom {
 
 extension View {
     func miniPlayerZoomSource(_ zoom: Namespace.ID) -> some View {
-        matchedTransitionSource(id: MiniPlayerZoom.id, in: zoom) { $0.clipShape(Capsule()) }
+        matchedTransitionSource(id: MiniPlayerZoom.id, in: zoom) { $0.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous)) }  // The pill's round ends; Capsule isn't accepted here.
     }
 }
 
