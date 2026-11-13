@@ -62,14 +62,29 @@ struct MiniPlayerContent: View {
     }
 }
 
+/// The pill is the source of the full player's zoom transition: the player grows out of it and,
+/// pulled down, shrinks back into it.
+enum MiniPlayerZoom {
+    static let id = "miniPlayer"
+}
+
+extension View {
+    func miniPlayerZoomSource(_ zoom: Namespace.ID) -> some View {
+        matchedTransitionSource(id: MiniPlayerZoom.id, in: zoom) { $0.clipShape(Capsule()) }
+    }
+}
+
 #if compiler(>=6.2)
 @available(iOS 26, *)
 struct AccessoryMiniPlayer: View {
     let open: () -> Void
+    let zoom: Namespace.ID
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
 
     var body: some View {
         MiniPlayerContent(compact: placement == .inline, open: open)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .miniPlayerZoomSource(zoom)
     }
 }
 #endif
@@ -77,12 +92,14 @@ struct AccessoryMiniPlayer: View {
 /// Pre-iOS 26 stand-in: a floating material capsule above the tab bar.
 struct FloatingMiniPlayer: View {
     let open: () -> Void
+    let zoom: Namespace.ID
 
     var body: some View {
         MiniPlayerContent(compact: false, open: open)
             .frame(height: 56)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+            .miniPlayerZoomSource(zoom)
             .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
             .padding(.horizontal, 12)
             .padding(.bottom, 6)
@@ -101,6 +118,7 @@ enum MiniPlayerStyle {
 /// Adds the floating pill to a tab's content when the native accessory isn't available.
 struct FallbackMiniPlayer: ViewModifier {
     let open: () -> Void
+    let zoom: Namespace.ID
     @EnvironmentObject private var player: Player
 
     @ViewBuilder
@@ -109,7 +127,7 @@ struct FallbackMiniPlayer: ViewModifier {
             content
         } else {
             content.safeAreaInset(edge: .bottom, spacing: 0) {
-                if player.current != nil { FloatingMiniPlayer(open: open) }
+                if player.current != nil { FloatingMiniPlayer(open: open, zoom: zoom) }
             }
         }
     }
@@ -120,6 +138,7 @@ struct TabAccessoryMiniPlayer: ViewModifier {
     /// Show the pill only while a track is loaded (playing or paused).
     let isVisible: Bool
     let open: () -> Void
+    let zoom: Namespace.ID
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -127,11 +146,11 @@ struct TabAccessoryMiniPlayer: ViewModifier {
         if #available(iOS 26.1, *) {
             // isEnabled hides the accessory cleanly; toggling the modifier itself rebuilds the TabView.
             content
-                .tabViewBottomAccessory(isEnabled: isVisible) { AccessoryMiniPlayer(open: open) }
+                .tabViewBottomAccessory(isEnabled: isVisible) { AccessoryMiniPlayer(open: open, zoom: zoom) }
                 .tabBarMinimizeBehavior(.never)  // This fork keeps the tab bar full size.
         } else if #available(iOS 26, *) {
             content
-                .tabViewBottomAccessory { AccessoryMiniPlayer(open: open) }
+                .tabViewBottomAccessory { AccessoryMiniPlayer(open: open, zoom: zoom) }
                 .tabBarMinimizeBehavior(.never)  // This fork keeps the tab bar full size.
         } else {
             content

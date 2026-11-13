@@ -24,8 +24,6 @@ struct NowPlayingView: View {
     @State private var lyricsFile: PlayerMoreMenu.LyricsFile = .none
     @AppStorage(PerformanceTest.meterKey) private var showMeter = false
     @AppStorage(PerformanceTest.plainBackgroundKey) private var plainBackground = false
-    /// How far the player has been pulled down to close it.
-    @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,17 +65,13 @@ struct NowPlayingView: View {
         }
         .padding(.horizontal, 28)
         .foregroundStyle(.white)
-        .background { PlayerBackground(image: plainBackground ? nil : player.artwork, cornerRadius: min(dragOffset / 24, 1) * 44) }
+        .background { PlayerBackground(image: plainBackground ? nil : player.artwork) }
         .overlay(alignment: .topLeading) {
             if showMeter { FrameMeterBadge().padding(.leading, 16).padding(.top, 2) }
         }
         .environment(\.colorScheme, .dark)
-        // Full screen like Apple Music; pull down anywhere outside the lyrics, queue and sliders
-        // to close it, with the app showing through behind as it moves.
-        .offset(y: dragOffset)
-        .gesture(dismissDrag)
-        .onDisappear { dragOffset = 0 }
-        .presentationBackground(.clear)
+        // Pulling down to close is the system zoom transition's own gesture (set where the player
+        // is presented): the player shrinks back into the mini player pill, like Apple Music.
         .sheet(isPresented: $showEqualizer) {
             NavigationStack { EqualizerView(equalizer: player.equalizer) }
                 .presentationDetents([.medium, .large])
@@ -97,23 +91,6 @@ struct NowPlayingView: View {
                     : (LyricsService.fetchedSource(of: file) == nil ? .yours : .fetched)
             }.value
         }
-    }
-
-    private var dismissDrag: some Gesture {
-        DragGesture(minimumDistance: 12, coordinateSpace: .global)
-            .onChanged { value in
-                guard value.translation.height > abs(value.translation.width) || dragOffset > 0 else { return }
-                // Counted from where the drag actually started (after the 12 pt threshold), so the
-                // sheet follows the finger from zero instead of jumping down first.
-                dragOffset = max(value.translation.height - 12, 0)
-            }
-            .onEnded { value in
-                if dragOffset > 140 || (dragOffset > 0 && value.predictedEndTranslation.height > 320) {
-                    router.showPlayer = false
-                } else {
-                    withAnimation(.interpolatingSpring(stiffness: 220, damping: 26)) { dragOffset = 0 }
-                }
-            }
     }
 
     private var largeArtwork: some View {
@@ -319,8 +296,6 @@ struct ClockedLyrics: View {
 /// Blurred, darkened artwork filling the screen.
 struct PlayerBackground: View {
     let image: UIImage?
-    /// Rounded while the player is being pulled down; square (edge to edge) otherwise.
-    var cornerRadius: CGFloat = 0
 
     /// The artwork blurred once, ahead of time. A live full-screen blur is redone by the GPU on
     /// every frame anything above it moves (the lyrics, all the time), which made the whole
@@ -352,7 +327,6 @@ struct PlayerBackground: View {
                 LinearGradient(colors: [.black.opacity(0.5), .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
             }
             .frame(width: geometry.size.width, height: geometry.size.height + extra)
-            .clipShape(.rect(cornerRadius: cornerRadius))
             .drawingGroup()
             .offset(y: -extra)
         }
