@@ -159,6 +159,8 @@ final class TrendingStore: ObservableObject {
     /// Loads the chart unless it was loaded for this country in the last hour.
     func load(force: Bool = false) async {
         let wanted = country
+        // Off Wi-Fi the charts saved on the phone stay as they are, unless refreshed by hand.
+        if !force, !NetworkPolicy.allowed { return }
         if !force, loadedCountry == wanted, !entries.isEmpty, Date().timeIntervalSince(loadedAt) < 3600 { return }
         let token = UUID()
         loadToken = token

@@ -148,7 +148,8 @@ actor LyricsService {
                 return Self.lyrics(from: stored.entry)
             }
         }
-        guard AppSettings.lyricsLookupEnabled else { return .notFound }
+        // Off Wi-Fi nothing is fetched (or remembered as missing); a source picked by hand still is.
+        guard AppSettings.lyricsLookupEnabled, only != nil || NetworkPolicy.allowed else { return .notFound }
 
         let asked = only.map { [$0] } ?? LyricsSource.allCases
         var pending = asked
@@ -255,7 +256,7 @@ actor LyricsService {
            !stored.lines.isEmpty || Date().timeIntervalSince(stored.fetched) < 7 * 86_400 {
             return stored.lines
         }
-        guard AppSettings.lyricsLookupEnabled else { return [:] }
+        guard AppSettings.lyricsLookupEnabled, NetworkPolicy.allowed else { return [:] }
         do {
             let result = try await Musixmatch.shared.fetch(title: title, artist: artist, album: album, duration: duration)
             let lines = result?.romanized ?? [:]

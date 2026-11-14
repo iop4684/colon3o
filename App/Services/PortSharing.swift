@@ -24,6 +24,8 @@ final class PortSharing: ObservableObject {
 
     @Published private(set) var check: CheckStatus = .unknown
     @Published private(set) var onWiFi = false
+    /// Mobile data, a hotspot or Low Data Mode, as last reported.
+    private var pathMetered = true
 
     var port: UInt16 {
         let stored = UserDefaults.standard.integer(forKey: Self.portKey)
@@ -93,17 +95,20 @@ final class PortSharing: ObservableObject {
 
     private func pathChanged(_ newPath: NWPath) {
         onWiFi = newPath.status == .satisfied && newPath.usesInterfaceType(.wifi)
+        pathMetered = newPath.isExpensive || newPath.isConstrained
         updateSharingAllowed()
     }
 
     private func updateSharingAllowed() {
-        soulseek.client.setSharingAllowed(!shareOnlyOnWiFi || onWiFi)
+        // Uploads to other users also wait for Wi-Fi unless Use Mobile Data is on.
+        let mobileDataOK = UserDefaults.standard.bool(forKey: NetworkPolicy.useMobileDataKey) || !pathMetered
+        soulseek.client.setSharingAllowed(mobileDataOK && (!shareOnlyOnWiFi || onWiFi))
     }
 
     /// Asks slsknet.org's tester (as Nicotine+ does) to connect back to us. It tries the address
     /// the request came from, so through a VPN it tests the VPN's forwarded port.
     private func runCheck() async {
-        guard soulseek.isLoggedIn, isListening else {
+        guard soulseek.isLoggedIn, isListening, NetworkPolicy.allowed else {
             check = .unknown
             return
         }

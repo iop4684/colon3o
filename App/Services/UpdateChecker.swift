@@ -90,7 +90,7 @@ final class UpdateChecker: ObservableObject {
 
     /// On launch / foreground: at most every few hours, and only when automatic checks are on.
     func checkIfDue() {
-        guard automatic else { return }
+        guard automatic, NetworkPolicy.allowed else { return }
         if let lastChecked, Date().timeIntervalSince(lastChecked) < 4 * 3600, state != .idle { return }
         Task { await check() }
     }

@@ -350,7 +350,7 @@ actor ArtworkStore {
         let file = directory.appendingPathComponent("web-\(hash).img")
         let miss = directory.appendingPathComponent("web-\(hash).none")
         if FileManager.default.fileExists(atPath: file.path) { return file }
-        guard AppSettings.artworkLookupEnabled else { return nil }
+        guard AppSettings.artworkLookupEnabled, NetworkPolicy.allowed else { return nil }  // Off Wi-Fi: own covers only; retried later.
         if let attributes = try? FileManager.default.attributesOfItem(atPath: miss.path),
            let date = attributes[.modificationDate] as? Date, Date().timeIntervalSince(date) < 7 * 86_400 {
             return nil

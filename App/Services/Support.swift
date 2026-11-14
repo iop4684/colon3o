@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Security
 
 /// Password storage. Works with free-account sideloading (no extra entitlements needed).
@@ -113,6 +114,40 @@ enum Formatting {
 }
 
 /// User-facing switches, stored in UserDefaults so views can bind with @AppStorage.
+/// Whether the app's own background lookups (covers, lyrics, tracklists, update checks, Last.fm
+/// suggestions, the port check) may use the network. On mobile data or a hotspot, or in Low Data
+/// Mode, they wait until Wi-Fi unless "Use Mobile Data" is on. Downloads, searches and anything
+/// started by a tap are never held back by this.
+final class NetworkPolicy: @unchecked Sendable {
+    static let shared = NetworkPolicy()
+    static let useMobileDataKey = "network.useMobileData"
+
+    private let monitor = NWPathMonitor()
+    private let lock = NSLock()
+    /// Counted as metered until the first path report, so nothing slips out on a cellular launch.
+    private var isMetered = true
+
+    private init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.lock.lock()
+            self.isMetered = path.isExpensive || path.isConstrained
+            self.lock.unlock()
+        }
+        monitor.start(queue: DispatchQueue(label: "colon3o.network-policy"))
+    }
+
+    var metered: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return isMetered
+    }
+
+    /// True on Wi-Fi, or anywhere when Use Mobile Data is on.
+    static var allowed: Bool {
+        UserDefaults.standard.bool(forKey: useMobileDataKey) || !shared.metered
+    }
+}
+
 enum AppSettings {
     static let artworkLookupKey = "artworkLookup"
     static let lyricsLookupKey = "lyricsLookup"
