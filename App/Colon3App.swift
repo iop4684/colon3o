@@ -25,7 +25,6 @@ struct Colon3App: App {
     private let transferMonitor: TransferMonitor
 
     init() {
-        _ = NetworkPolicy.shared  // Start watching for mobile data before anything asks.
         Diagnostics.shared.start()
         LiveContainerFix.apply()
         FileProtection.relax()

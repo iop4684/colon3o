@@ -225,8 +225,6 @@ struct LibrarySettings: View {
     @AppStorage(AppSettings.lyricsLookupKey) private var lyricsLookup = true
     @AppStorage(AppSettings.showMissingKey) private var showMissing = true
     @AppStorage(AppSettings.musicBrainzKey) private var musicBrainz = true
-    @AppStorage(NetworkPolicy.useMobileDataKey) private var useMobileData = false
-    @EnvironmentObject private var portSharing: PortSharing
 
     var body: some View {
         Form {
@@ -245,8 +243,6 @@ struct LibrarySettings: View {
             }
 
             Section {
-                Toggle("Use Mobile Data", isOn: $useMobileData)
-                    .onChange(of: useMobileData) { _, _ in portSharing.settingsChanged() }
                 Toggle("Look Up Missing Artwork", isOn: $artworkLookup)
                 Toggle("Prefer Apple Music Artwork", isOn: $preferApple)
                     .disabled(!artworkLookup)
@@ -263,7 +259,7 @@ struct LibrarySettings: View {
             } header: {
                 Text("Online")
             } footer: {
-                Text("With Use Mobile Data off, the app's own lookups below, update checks, Last.fm suggestions and scrobbles, and sharing your files with other users wait for Wi-Fi (a hotspot or Low Data Mode counts as mobile data). Downloads and searches always work. Artwork comes from the iTunes Search API when a song has none of its own. With Prefer Apple Music Artwork, Apple's original cover is used whenever the album is found there (same name and artist), even if the files have one; lyrics come from LRCLIB, PetitLyrics and Musixmatch (the best one found wins; Japanese songs use Musixmatch's romaji when it has some), and are saved next to the song as a .lrc for offline use. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
+                Text("Artwork comes from the iTunes Search API when a song has none of its own. With Prefer Apple Music Artwork, Apple's original cover is used whenever the album is found there (same name and artist), even if the files have one; lyrics come from LRCLIB, PetitLyrics and Musixmatch (the best one found wins; Japanese songs use Musixmatch's romaji when it has some), and are saved next to the song as a .lrc for offline use. Missing songs come from the Soulseek folder an album was downloaded from, or from MusicBrainz otherwise.")
             }
         }
         .navigationTitle("Library")
@@ -562,7 +558,7 @@ struct ForkBuildSection: View {
         } footer: {
             Text("Follows the newest build of colon3o's \(fork.branch) branch. Get Build downloads its colon3o.ipa straight from the \(fork.branch)-latest release on GitHub, ready for LiveContainer, SideStore or any signer.")
         }
-        .task { if NetworkPolicy.allowed { await fork.check() } }
+        .task { await fork.check() }
     }
 
     @ViewBuilder

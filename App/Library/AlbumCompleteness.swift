@@ -102,7 +102,7 @@ final class AlbumCompletenessStore: ObservableObject {
         }
 
         // 2. MusicBrainz.
-        guard Self.musicBrainzEnabled, NetworkPolicy.allowed else {
+        guard Self.musicBrainzEnabled else {
             loading.remove(album.id)
             return
         }

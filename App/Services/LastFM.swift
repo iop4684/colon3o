@@ -71,7 +71,7 @@ final class LastFM: ObservableObject, Scrobbler {
     // MARK: Scrobbler
 
     func nowPlaying(_ track: Track) {
-        guard isConnected, AppSettings.scrobblingEnabled, NetworkPolicy.allowed else { return }
+        guard isConnected, AppSettings.scrobblingEnabled else { return }
         var parameters = ["artist": track.artist, "track": track.title, "duration": String(Int(track.duration))]
         if let album = track.album { parameters["album"] = album }
         Task {
@@ -90,8 +90,7 @@ final class LastFM: ObservableObject, Scrobbler {
 
     /// Sends queued scrobbles, 50 at a time (the API limit). Failed batches stay queued for later.
     func flush() {
-        // Off Wi-Fi the scrobbles stay queued (saved on the phone) and go out later.
-        guard isConnected, !isFlushing, !pending.isEmpty, NetworkPolicy.allowed else { return }
+        guard isConnected, !isFlushing, !pending.isEmpty else { return }
         isFlushing = true
         let batch = Array(pending.prefix(50))
         var parameters: [String: String] = [:]
@@ -229,7 +228,6 @@ extension LastFM {
 
     /// Unsigned read-only GET.
     private static func publicCall(method: String, parameters: [String: String], apiKey: String) async throws -> [String: Any] {
-        guard NetworkPolicy.allowed else { throw URLError(.notConnectedToInternet) }
         var components = URLComponents(string: "https://ws.audioscrobbler.com/2.0/")!
         let all = parameters.merging(["method": method, "api_key": apiKey, "format": "json"]) { first, _ in first }
         components.queryItems = all.map { URLQueryItem(name: $0.key, value: $0.value) }
